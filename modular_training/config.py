@@ -1,7 +1,18 @@
 from dataclasses import dataclass
 
 LABEL_COLUMNS = ["relevance", "concreteness", "constructive"]
-AVAILABLE_MODELS = ["bert", "roberta", "svm", "cnn_attention", "lstm", "bilstm", "lsmt"]
+AVAILABLE_MODELS = [
+    "bert",
+    "roberta",
+    "linear_svm",
+    "naive_bayes",
+    "logistic_regression",
+    "cnn_attention",
+    "lstm",
+    "bilstm",
+    "llm_zero_shot",
+    "llm_few_shot",
+]
 
 
 @dataclass
@@ -15,11 +26,11 @@ class CommonConfig:
 @dataclass
 class RNNConfig:
     max_len: int = 200
-    embedding_dim: int = 100
+    embedding_dim: int = 300
     hidden_dim: int = 128
     dropout: float = 0.3
     batch_size: int = 32
-    epochs: int = 10
+    epochs: int = 30
     lr: float = 1e-3
     weight_decay: float = 1e-4
     scheduler_patience: int = 2
@@ -32,7 +43,7 @@ class RNNConfig:
 @dataclass
 class CNNConfig:
     max_len: int = 200
-    embedding_dim: int = 100
+    embedding_dim: int = 300
     num_filters: int = 128
     filter_sizes: tuple = (3, 4, 5)
     dropout: float = 0.3
@@ -55,3 +66,11 @@ class TransformerConfig:
     epochs: int = 5
     lr: float = 2e-5
     weight_decay: float = 1e-3
+
+
+@dataclass
+class LLMConfig:
+    model_name: str = "Qwen/Qwen2-7B-Instruct"
+    max_new_tokens: int = 64
+    temperature: float = 0.0
+    few_shot_k: int = 3

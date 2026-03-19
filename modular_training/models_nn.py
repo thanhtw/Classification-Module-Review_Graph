@@ -2,6 +2,7 @@ import time
 import json
 import os
 import copy
+import gzip
 from typing import Dict, Sequence, Tuple
 
 import numpy as np
@@ -28,6 +29,13 @@ class SeqDataset(Dataset):
 
 
 class LSTMClassifier(nn.Module):
+    """
+    LSTM/BiLSTM Classifier for multi-label text classification.
+    
+    Architecture:
+    - LSTM: Embedding -> LSTM -> Mean Pooling -> Dense -> Sigmoid
+    - BiLSTM: Embedding -> BiLSTM -> Mean Pooling -> Dense -> Sigmoid
+    """
     def __init__(
         self,
         vocab_size: int,
@@ -38,31 +46,50 @@ class LSTMClassifier(nn.Module):
         dropout: float,
         embeddings: np.ndarray | None = None,
         embedding_trainable: bool = True,
-        use_attention: bool = False,
     ):
         super().__init__()
+        # Embedding layer (initialized with GloVe or random)
         self.embedding = nn.Embedding(vocab_size, emb_dim, padding_idx=0)
         if embeddings is not None:
             self.embedding.weight.data.copy_(torch.from_numpy(embeddings.astype(np.float32)))
         self.embedding.weight.requires_grad = embedding_trainable
+        
+        # LSTM/BiLSTM layer
         self.rnn = nn.LSTM(emb_dim, hidden_dim, batch_first=True, bidirectional=bidirectional)
         out_dim = hidden_dim * 2 if bidirectional else hidden_dim
-        self.use_attention = use_attention
-        self.attention = nn.Linear(out_dim, 1) if use_attention else None
+        
+        # Dropout for regularization
         self.dropout = nn.Dropout(dropout)
+        
+        # Dense layer -> output logits (sigmoid applied via BCEWithLogitsLoss)
         self.fc = nn.Linear(out_dim, n_labels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        e = self.embedding(x)
-        out, _ = self.rnn(e)
-        if self.use_attention and self.attention is not None:
-            # Match BiLSTM_GloVe design: attention-weighted pooling over time.
-            w = torch.softmax(self.attention(out), dim=1)
-            pooled = torch.sum(w * out, dim=1)
-        else:
-            pooled = out.mean(dim=1)
+        """
+        Forward pass: Embedding -> LSTM -> Mean Pooling -> Dropout -> Dense
+        
+        Args:
+            x: Input sequence of token IDs (batch_size, seq_len)
+            
+        Returns:
+            Logits (batch_size, n_labels) - sigmoid applied in loss function
+        """
+        # Step 1: Embedding
+        embedded = self.embedding(x)  # (batch_size, seq_len, emb_dim)
+        
+        # Step 2: LSTM/BiLSTM
+        lstm_out, (hidden, cell) = self.rnn(embedded)  # (batch_size, seq_len, hidden_dim*2 or hidden_dim)
+        
+        # Step 3: Mean pooling over time dimension
+        pooled = lstm_out.mean(dim=1)  # (batch_size, hidden_dim*2 or hidden_dim)
+        
+        # Step 4: Dropout
         pooled = self.dropout(pooled)
-        return self.fc(pooled)
+        
+        # Step 5: Dense layer (logits)
+        logits = self.fc(pooled)  # (batch_size, n_labels)
+        
+        return logits
 
 
 class CNNAttentionClassifier(nn.Module):
@@ -220,7 +247,8 @@ def _load_glove_embeddings(vocab: Dict[str, int], embedding_dim: int, glove_path
     used_path = ""
 
     if glove_path and os.path.exists(glove_path):
-        with open(glove_path, "r", encoding="utf-8") as f:
+        open_fn = gzip.open if glove_path.endswith(".gz") else open
+        with open_fn(glove_path, "rt", encoding="utf-8") as f:
             for line in f:
                 parts = line.rstrip().split()
                 if len(parts) <= embedding_dim:
@@ -281,7 +309,6 @@ def run_lstm_like(
         dropout=cfg.dropout,
         embeddings=embeddings,
         embedding_trainable=cfg.glove_trainable,
-        use_attention=bool(bidirectional),
     )
     metrics, train_time, infer_time, model = _train_eval(
         model,
@@ -330,6 +357,87 @@ def run_lstm_like(
                     "smote_stats": smote_stats,
                     "train_size_before": int(len(train_labels)),
                     "train_size_after": int(len(y_train)),
+                    "glove_info": glove_info,
+                },
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
+
+    return metrics, train_time, infer_time
+
+
+def run_lstm_like_from_sequences(
+    x_train: np.ndarray,
+    train_labels: np.ndarray,
+    x_test: np.ndarray,
+    test_labels: np.ndarray,
+    vocab: Dict[str, int],
+    cfg: RNNConfig,
+    bidirectional: bool,
+    seed: int,
+    save_dir: str = "",
+    smote_stats: Dict[str, object] | None = None,
+) -> Tuple[Dict[str, float], float, float]:
+    embeddings, glove_info = _load_glove_embeddings(vocab, cfg.embedding_dim, cfg.glove_path)
+
+    model = LSTMClassifier(
+        vocab_size=len(vocab),
+        emb_dim=cfg.embedding_dim,
+        hidden_dim=cfg.hidden_dim,
+        n_labels=train_labels.shape[1],
+        bidirectional=bidirectional,
+        dropout=cfg.dropout,
+        embeddings=embeddings,
+        embedding_trainable=cfg.glove_trainable,
+    )
+    metrics, train_time, infer_time, model = _train_eval(
+        model,
+        x_train,
+        train_labels,
+        x_test,
+        test_labels,
+        cfg.batch_size,
+        cfg.epochs,
+        cfg.lr,
+        seed,
+        cfg.weight_decay,
+        cfg.scheduler_patience,
+        cfg.scheduler_factor,
+        cfg.early_stopping_patience,
+    )
+
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+        torch.save(
+            {
+                "state_dict": model.state_dict(),
+                "vocab": vocab,
+                "model_name": "bilstm" if bidirectional else "lstm",
+                "config": {
+                    "max_len": cfg.max_len,
+                    "embedding_dim": cfg.embedding_dim,
+                    "hidden_dim": cfg.hidden_dim,
+                    "dropout": cfg.dropout,
+                    "bidirectional": bidirectional,
+                    "weight_decay": cfg.weight_decay,
+                    "scheduler_patience": cfg.scheduler_patience,
+                    "scheduler_factor": cfg.scheduler_factor,
+                    "early_stopping_patience": cfg.early_stopping_patience,
+                    "glove_trainable": cfg.glove_trainable,
+                    "glove_info": glove_info,
+                },
+            },
+            os.path.join(save_dir, "model.pt"),
+        )
+        with open(os.path.join(save_dir, "metadata.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "model_type": "bilstm" if bidirectional else "lstm",
+                    "use_smote": bool(smote_stats and smote_stats.get("applied", 0)),
+                    "smote_stats": smote_stats if smote_stats is not None else {"applied": 0, "method": "disabled"},
+                    "train_size_before": int(len(train_labels)),
+                    "train_size_after": int(len(train_labels)),
                     "glove_info": glove_info,
                 },
                 f,

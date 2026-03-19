@@ -9,20 +9,34 @@ import torch
 from sklearn.model_selection import KFold, train_test_split
 
 from modular_training.analysis_utils import export_train_smote_analysis
-from modular_training.config import AVAILABLE_MODELS, CNNConfig, CommonConfig, LABEL_COLUMNS, RNNConfig, TransformerConfig
+from modular_training.config import (
+    AVAILABLE_MODELS,
+    CNNConfig,
+    CommonConfig,
+    LABEL_COLUMNS,
+    LLMConfig,
+    RNNConfig,
+    TransformerConfig,
+)
 from modular_training.data_utils import load_and_clean_data, set_seed
+from modular_training.models_llm import run_llm_zero_few_shot
 from modular_training.models_nn import run_cnn_attention, run_lstm_like
-from modular_training.models_svm import run_svm
+from modular_training.models_ml import run_linear_svm, run_naive_bayes, run_logistic_regression
 from modular_training.models_transformers import run_transformer
 from modular_training.report_utils import export_results
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train/test BERT, RoBERTa, SVM, CNN_Attention, LSTM, BiLSTM on cleaned_3label_data.csv with 10-fold CV by default"
+        description="Train/test modular models (BERT, RoBERTa, CNN, LSTM/BiLSTM, LinearSVM, NaiveBayes, LogisticRegression, optional LLM) on cleaned_3label_data.csv"
     )
     parser.add_argument("--data_path", type=str, default="data/cleaned_3label_data.csv")
-    parser.add_argument("--models", nargs="+", default=["bert", "roberta", "svm", "cnn_attention", "lstm", "bilstm"], choices=AVAILABLE_MODELS)
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        default=["bert", "roberta", "linear_svm", "naive_bayes", "logistic_regression", "cnn_attention", "lstm", "bilstm"],
+        choices=AVAILABLE_MODELS,
+    )
     parser.add_argument("--test_size", type=float, default=0.2, help="Used only when --n_folds <= 1")
     parser.add_argument("--n_folds", type=int, default=10, help="Number of folds for cross validation; use 1 for holdout")
     parser.add_argument("--seed", type=int, default=42)
@@ -33,20 +47,74 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cnn_epochs", type=int, default=5)
     parser.add_argument("--bert_epochs", type=int, default=5)
     parser.add_argument("--roberta_epochs", type=int, default=5)
-    parser.add_argument("--glove_path", type=str, default="", help="Path to pretrained GloVe/word vectors text file")
-    parser.add_argument("--freeze_glove", action="store_true", help="Freeze embedding layer initialized by GloVe vectors")
+    parser.add_argument("--glove_path", type=str, default="", help="Path to pretrained word vectors text file")
+    parser.add_argument("--freeze_glove", action="store_true", help="Freeze embedding layer initialized by pretrained vectors")
+
+    parser.add_argument("--bert_model_name", type=str, default="bert-base-chinese", help="Hugging Face model id for BERT")
+    parser.add_argument(
+        "--roberta_model_name",
+        type=str,
+        default="hfl/chinese-roberta-wwm-ext",
+        help="Hugging Face model id for RoBERTa",
+    )
+
+    parser.add_argument(
+        "--llm_model_name",
+        type=str,
+        default="Qwen/Qwen2-7B-Instruct",
+        choices=["Qwen/Qwen2-7B-Instruct", "meta-llama/Llama-3-8B-Instruct"],
+        help="Hugging Face model id for llm_zero_shot/llm_few_shot",
+    )
+    parser.add_argument("--llm_few_shot_k", type=int, default=3, help="Number of few-shot examples to include in each prompt")
+    parser.add_argument("--llm_max_new_tokens", type=int, default=64, help="Maximum generated tokens for LLM responses")
+    parser.add_argument("--llm_temperature", type=float, default=0.0, help="Sampling temperature for LLM decoding")
     return parser.parse_args()
 
 
-def _normalize_model_name(name: str) -> str:
-    n = name.lower()
-    if n == "lsmt":
-        return "lstm"
-    return n
+def _make_folds(n_samples: int, n_folds: int, test_size: float, seed: int) -> List[Dict[str, np.ndarray]]:
+    idx_local = np.arange(n_samples)
+    fold_list: List[Dict[str, np.ndarray]] = []
+    if n_folds >= 2:
+        kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
+        for tr_idx, te_idx in kf.split(idx_local):
+            fold_list.append({"train_idx": tr_idx, "test_idx": te_idx})
+    else:
+        tr_idx, te_idx = train_test_split(
+            idx_local,
+            test_size=test_size,
+            random_state=seed,
+            shuffle=True,
+        )
+        fold_list.append({"train_idx": tr_idx, "test_idx": te_idx})
+    return fold_list
 
 
 def main() -> None:
     args = parse_args()
+    default_zh_vec_path = os.path.join("embeddings", "cc.zh.300.vec.gz")
+    if not args.glove_path and os.path.exists(default_zh_vec_path):
+        args.glove_path = default_zh_vec_path
+        print(f"Using local Chinese pretrained vectors: {args.glove_path}")
+
+    requested_models = list(args.models)
+    supported_in_runner = {
+        "bert",
+        "roberta",
+        "linear_svm",
+        "naive_bayes",
+        "logistic_regression",
+        "cnn_attention",
+        "lstm",
+        "bilstm",
+        "llm_zero_shot",
+        "llm_few_shot",
+    }
+    models_to_run = [m for m in requested_models if m in supported_in_runner]
+    if not models_to_run:
+        raise ValueError(
+            "No model supported by this runner was selected. "
+            "Use --models with any of: bert roberta linear_svm naive_bayes logistic_regression cnn_attention lstm bilstm llm_zero_shot llm_few_shot"
+        )
 
     common = CommonConfig(seed=args.seed, test_size=args.test_size, use_smote=(not args.no_smote), output_dir=args.output_dir)
     set_seed(common.seed)
@@ -56,15 +124,37 @@ def main() -> None:
     texts = df["text"].tolist()
     labels = df[LABEL_COLUMNS].values.astype(int)
 
-    idx = np.arange(len(texts))
-    folds: List[Dict[str, np.ndarray]] = []
-    if args.n_folds >= 2:
-        kf = KFold(n_splits=args.n_folds, shuffle=True, random_state=common.seed)
-        for tr_idx, te_idx in kf.split(idx):
-            folds.append({"train_idx": tr_idx, "test_idx": te_idx})
-    else:
-        train_idx, test_idx = train_test_split(idx, test_size=common.test_size, random_state=common.seed, shuffle=True)
-        folds.append({"train_idx": train_idx, "test_idx": test_idx})
+    rnn_cfg = RNNConfig(
+        epochs=args.rnn_epochs,
+        embedding_dim=300,
+        glove_path=args.glove_path,
+        glove_trainable=(not args.freeze_glove),
+    )
+    cnn_cfg = CNNConfig(
+        epochs=args.cnn_epochs,
+        embedding_dim=300,
+        glove_path=args.glove_path,
+        glove_trainable=(not args.freeze_glove),
+    )
+    bert_cfg = TransformerConfig(model_name=args.bert_model_name, epochs=args.bert_epochs)
+    roberta_cfg = TransformerConfig(model_name=args.roberta_model_name, epochs=args.roberta_epochs)
+    llm_cfg = LLMConfig(
+        model_name=args.llm_model_name,
+        max_new_tokens=args.llm_max_new_tokens,
+        temperature=args.llm_temperature,
+        few_shot_k=args.llm_few_shot_k,
+    )
+
+    analysis_dir = os.path.join(common.output_dir, "global_train_data_analysis")
+    export_train_smote_analysis(
+        train_texts=texts,
+        train_labels=df[LABEL_COLUMNS].values.astype(int),
+        output_dir=analysis_dir,
+        seed=common.seed,
+        use_smote=bool(common.use_smote),
+    )
+
+    folds = _make_folds(len(texts), args.n_folds, common.test_size, common.seed)
 
     print(f"Total samples: {len(texts)}")
     print(f"Validation mode: {'cross-validation' if args.n_folds >= 2 else 'holdout'}")
@@ -72,55 +162,34 @@ def main() -> None:
         print(f"Folds: {args.n_folds}")
     else:
         print(f"Holdout test_size: {common.test_size}")
-    print(f"SMOTE applied: {common.use_smote} (train split only)")
+    print(f"SMOTE on train split (classical models): {bool(common.use_smote)}")
+    if any(m in {"llm_zero_shot", "llm_few_shot"} for m in models_to_run):
+        print(f"LLM backend model: {llm_cfg.model_name}")
 
     rows: List[Dict[str, float]] = []
     process_records: List[Dict[str, object]] = []
     artifacts_root = os.path.join(common.output_dir, "model_artifacts")
     os.makedirs(artifacts_root, exist_ok=True)
 
-    rnn_cfg = RNNConfig(
-        epochs=args.rnn_epochs,
-        glove_path=args.glove_path,
-        glove_trainable=(not args.freeze_glove),
-    )
-    cnn_cfg = CNNConfig(
-        epochs=args.cnn_epochs,
-        glove_path=args.glove_path,
-        glove_trainable=(not args.freeze_glove),
-    )
-    bert_cfg = TransformerConfig(model_name="bert-base-chinese", epochs=args.bert_epochs)
-    roberta_cfg = TransformerConfig(model_name="hfl/chinese-roberta-wwm-ext", epochs=args.roberta_epochs)
+    non_smote_models = {"llm_zero_shot", "llm_few_shot"}
 
-    for fold_id, fold_data in enumerate(folds, start=1):
-        train_idx = fold_data["train_idx"]
-        test_idx = fold_data["test_idx"]
-        train_texts = [texts[i] for i in train_idx]
-        test_texts = [texts[i] for i in test_idx]
-        y_train = labels[train_idx]
-        y_test = labels[test_idx]
+    for raw_name in models_to_run:
+        model_name = raw_name
 
-        print("\n" + "#" * 60)
-        print(f"Fold {fold_id}/{len(folds)} | Train: {len(train_texts)} | Test: {len(test_texts)}")
-        print("#" * 60)
+        for fold_id, fold_data in enumerate(folds, start=1):
+            train_idx = fold_data["train_idx"]
+            test_idx = fold_data["test_idx"]
 
-        analysis_dir = os.path.join(common.output_dir, "folds", f"fold_{fold_id}", "train_data_analysis")
-        export_train_smote_analysis(
-            train_texts=train_texts,
-            train_labels=y_train,
-            output_dir=analysis_dir,
-            seed=common.seed + fold_id,
-            use_smote=common.use_smote,
-        )
-        print(f"Fold {fold_id} train data analysis exported to: {analysis_dir}")
+            train_texts = [texts[i] for i in train_idx]
+            test_texts = [texts[i] for i in test_idx]
+            y_train = labels[train_idx]
+            y_test = labels[test_idx]
 
-        for raw_name in args.models:
-            model_name = _normalize_model_name(raw_name)
             print("\n" + "=" * 60)
             print(f"Running: {raw_name} | Fold {fold_id}/{len(folds)}")
             print("=" * 60)
 
-            seed = common.seed + fold_id * 100 + len(rows) + 1
+            seed = common.seed + (models_to_run.index(raw_name) + 1) * 1000 + fold_id
             model_artifact_dir = os.path.join(artifacts_root, model_name, f"fold_{fold_id}")
             model_temp_dir = os.path.join(common.output_dir, "temp", model_name, f"fold_{fold_id}")
             os.makedirs(model_artifact_dir, exist_ok=True)
@@ -128,77 +197,108 @@ def main() -> None:
 
             model_start = time.time()
 
-            if model_name == "svm":
-                metrics, train_t, infer_t = run_svm(
-                    train_texts,
-                    y_train,
-                    test_texts,
-                    y_test,
-                    common.use_smote,
-                    seed,
-                    save_dir=model_artifact_dir,
-                )
-            elif model_name == "cnn_attention":
-                metrics, train_t, infer_t = run_cnn_attention(
-                    train_texts,
-                    y_train,
-                    test_texts,
-                    y_test,
-                    cnn_cfg,
-                    common.use_smote,
-                    seed,
-                    save_dir=model_artifact_dir,
-                )
-            elif model_name == "lstm":
-                metrics, train_t, infer_t = run_lstm_like(
-                    train_texts,
-                    y_train,
-                    test_texts,
-                    y_test,
-                    rnn_cfg,
-                    False,
-                    common.use_smote,
-                    seed,
-                    save_dir=model_artifact_dir,
-                )
-            elif model_name == "bilstm":
-                metrics, train_t, infer_t = run_lstm_like(
-                    train_texts,
-                    y_train,
-                    test_texts,
-                    y_test,
-                    rnn_cfg,
-                    True,
-                    common.use_smote,
-                    seed,
-                    save_dir=model_artifact_dir,
-                )
-            elif model_name == "bert":
+            if model_name == "bert":
                 metrics, train_t, infer_t = run_transformer(
-                    train_texts,
-                    y_train,
-                    test_texts,
-                    y_test,
-                    bert_cfg,
-                    seed,
-                    common.use_smote,
-                    model_temp_dir,
+                    train_texts=train_texts,
+                    train_labels=y_train,
+                    test_texts=test_texts,
+                    test_labels=y_test,
+                    cfg=bert_cfg,
+                    seed=seed,
+                    use_smote=common.use_smote,
+                    output_dir=model_temp_dir,
                     save_dir=model_artifact_dir,
                 )
             elif model_name == "roberta":
                 metrics, train_t, infer_t = run_transformer(
-                    train_texts,
-                    y_train,
-                    test_texts,
-                    y_test,
-                    roberta_cfg,
-                    seed,
-                    common.use_smote,
-                    model_temp_dir,
+                    train_texts=train_texts,
+                    train_labels=y_train,
+                    test_texts=test_texts,
+                    test_labels=y_test,
+                    cfg=roberta_cfg,
+                    seed=seed,
+                    use_smote=common.use_smote,
+                    output_dir=model_temp_dir,
+                    save_dir=model_artifact_dir,
+                )
+            elif model_name == "linear_svm":
+                metrics, train_t, infer_t = run_linear_svm(
+                    train_texts=train_texts,
+                    train_labels=y_train,
+                    test_texts=test_texts,
+                    test_labels=y_test,
+                    use_smote=common.use_smote,
+                    seed=seed,
+                    save_dir=model_artifact_dir,
+                )
+            elif model_name == "naive_bayes":
+                metrics, train_t, infer_t = run_naive_bayes(
+                    train_texts=train_texts,
+                    train_labels=y_train,
+                    test_texts=test_texts,
+                    test_labels=y_test,
+                    use_smote=common.use_smote,
+                    seed=seed,
+                    save_dir=model_artifact_dir,
+                )
+            elif model_name == "logistic_regression":
+                metrics, train_t, infer_t = run_logistic_regression(
+                    train_texts=train_texts,
+                    train_labels=y_train,
+                    test_texts=test_texts,
+                    test_labels=y_test,
+                    use_smote=common.use_smote,
+                    seed=seed,
+                    save_dir=model_artifact_dir,
+                )
+            elif model_name == "cnn_attention":
+                metrics, train_t, infer_t = run_cnn_attention(
+                    train_texts=train_texts,
+                    train_labels=y_train,
+                    test_texts=test_texts,
+                    test_labels=y_test,
+                    cfg=cnn_cfg,
+                    use_smote=common.use_smote,
+                    seed=seed,
+                    save_dir=model_artifact_dir,
+                )
+            elif model_name == "lstm":
+                metrics, train_t, infer_t = run_lstm_like(
+                    train_texts=train_texts,
+                    train_labels=y_train,
+                    test_texts=test_texts,
+                    test_labels=y_test,
+                    cfg=rnn_cfg,
+                    bidirectional=False,
+                    use_smote=common.use_smote,
+                    seed=seed,
+                    save_dir=model_artifact_dir,
+                )
+            elif model_name == "bilstm":
+                metrics, train_t, infer_t = run_lstm_like(
+                    train_texts=train_texts,
+                    train_labels=y_train,
+                    test_texts=test_texts,
+                    test_labels=y_test,
+                    cfg=rnn_cfg,
+                    bidirectional=True,
+                    use_smote=common.use_smote,
+                    seed=seed,
+                    save_dir=model_artifact_dir,
+                )
+            elif model_name in {"llm_zero_shot", "llm_few_shot"}:
+                metrics, train_t, infer_t = run_llm_zero_few_shot(
+                    train_texts=train_texts,
+                    train_labels=y_train,
+                    test_texts=test_texts,
+                    test_labels=y_test,
+                    cfg=llm_cfg,
+                    mode="few_shot" if model_name == "llm_few_shot" else "zero_shot",
+                    seed=seed,
                     save_dir=model_artifact_dir,
                 )
             else:
-                raise ValueError(f"Unsupported model: {raw_name}")
+                raise ValueError(f"Unsupported model in current pipeline scope: {raw_name}")
 
             model_end = time.time()
 
@@ -207,7 +307,7 @@ def main() -> None:
                 "fold": int(fold_id),
                 "train_time_sec": float(train_t),
                 "infer_time_sec": float(infer_t),
-                "smote_train_only": int(common.use_smote),
+                "smote_train_only": int(common.use_smote and model_name not in non_smote_models),
                 "artifact_dir": model_artifact_dir,
                 "temp_dir": model_temp_dir,
             }
@@ -227,6 +327,7 @@ def main() -> None:
                     "ended_at_unix": float(model_end),
                     "train_time_sec": float(train_t),
                     "infer_time_sec": float(infer_t),
+                    "llm_model_name": llm_cfg.model_name if model_name in {"llm_zero_shot", "llm_few_shot"} else "",
                     "metrics": {k: float(v) for k, v in metrics.items()},
                 }
             )
@@ -242,13 +343,23 @@ def main() -> None:
             "seed": int(common.seed),
             "test_size": float(common.test_size),
             "n_folds": int(args.n_folds),
-            "use_smote_train_only": bool(common.use_smote),
-            "models": list(args.models),
+            "use_smote_on_training_split": bool(common.use_smote),
+            "models": list(models_to_run),
             "label_columns": list(LABEL_COLUMNS),
+            "llm": {
+                "model_name": llm_cfg.model_name,
+                "few_shot_k": int(llm_cfg.few_shot_k),
+                "max_new_tokens": int(llm_cfg.max_new_tokens),
+                "temperature": float(llm_cfg.temperature),
+            },
+            "transformers": {
+                "bert_model_name": bert_cfg.model_name,
+                "roberta_model_name": roberta_cfg.model_name,
+            },
         },
         "dataset": {
             "total_samples": int(len(texts)),
-            "folds": int(len(folds)),
+            "folds": int(args.n_folds if args.n_folds >= 2 else 1),
         },
         "records": process_records,
     }

@@ -18,21 +18,21 @@ import pandas as pd
 # Add parent directory to path to allow imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.per_label_metrics import (
+from src.utils.per_label_metrics import (
     compute_per_label_metrics,
     generate_confusion_matrices,
     print_per_label_metrics,
 )
-from src.error_analysis import (
+from src.analysis.error_analysis import (
     generate_error_summary,
     print_error_analysis,
 )
-from src.reproducibility import (
+from src.utils.reproducibility import (
     create_reproducibility_manifest,
     save_reproducibility_manifest,
     print_reproducibility_info,
 )
-from src.config import LABEL_COLUMNS
+from src.training.config import LABEL_COLUMNS
 
 
 def generate_comprehensive_report(results_dir: str, output_dir: str = None):

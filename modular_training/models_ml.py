@@ -3,13 +3,12 @@ Machine learning models for multilabel text classification.
 
 Pipeline:
 1. Preprocess Chinese text (tokenization, character cleaning)
-2. TF-IDF vectorization (10,000 features, unigrams + bigrams)
+2. Word2Vec vectorization (300-dim dense embeddings)
 3. Train/validation/test split
 4. Optional class imbalance handling (SMOTE)
-5. OneVsRestClassifier with LinearSVC, LogisticRegression, or Naive Bayes
-6. Threshold tuning for probability-based models
-7. Multilabel evaluation (accuracy, precision, recall, F1, hamming loss)
-8. Save vectorizer + model + label mapping
+5. OneVsRestClassifier with LinearSVC, LogisticRegression, or GaussianNB
+6. Multilabel evaluation (accuracy, precision, recall, F1, hamming loss)
+7. Save vectorizer + model + label mapping
 """
 
 import time
@@ -223,9 +222,10 @@ def run_naive_bayes(
         train_texts, train_labels, test_texts, use_smote, seed
     )
 
-    # Step 5: OneVsRestClassifier with MultinomialNB
-    # MultinomialNB: fast probability estimates, good for TF-IDF features
-    model = OneVsRestClassifier(MultinomialNB(alpha=1.0))
+    # Step 5: OneVsRestClassifier with GaussianNB
+    # GaussianNB: suitable for continuous-valued Word2Vec embeddings
+    # (MultinomialNB requires non-negative features, but Word2Vec embeddings can be negative)
+    model = OneVsRestClassifier(GaussianNB())
 
     # Training
     train_start = time.perf_counter()
@@ -259,16 +259,16 @@ def run_naive_bayes(
             json.dump(
                 {
                     "model_type": "naive_bayes_ovr",
-                    "model_description": "OneVsRestClassifier with MultinomialNB",
+                    "model_description": "OneVsRestClassifier with GaussianNB for Word2Vec embeddings",
                     "use_smote": bool(use_smote),
                     "smote_stats": smote_stats,
                     "train_size_before": int(len(train_labels)),
                     "train_size_after": int(len(y_train)),
                     "vectorizer_config": {
-                        "max_features": 10000,
-                        "ngram_range": [1, 2],
-                        "min_df": 2,
-                        "max_df": 0.95,
+                        "type": "Word2Vec",
+                        "vector_size": 300,
+                        "window": 5,
+                        "sg": 1,
                     },
                     "labels": LABEL_NAMES,
                 },

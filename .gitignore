@@ -1,0 +1,76 @@
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+*.venv
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.iml
+
+# Jupyter notebook cache
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Large model files and embeddings
+embeddings/*.vec.gz
+embeddings/*.bin
+*.pt
+*.pth
+*.ckpt
+
+# Training results and artifacts
+results/
+output/
+logs/
+*.log
+
+# Data and temporary files
+data/cleaned_*.csv
+data/processed/
+temp/
+tmp/
+*.tmp
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db
+.directory
+
+# pytest cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Misc
+*.bak
+*.backup
+*.swp
+*~
+.cache/

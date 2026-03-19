@@ -19,13 +19,13 @@ import pickle
 from typing import Dict, Sequence, Tuple
 
 import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.svm import LinearSVC
-from sklearn.naive_bayes import MultinomialNB
+from sklearn.naive_bayes import MultinomialNB, GaussianNB
 from sklearn.linear_model import LogisticRegression
 
 from .data_utils import preprocess_for_tfidf
+from .embeddings_word2vec import Word2VecVectorizer
 from .metrics_utils import compute_metrics
 from .smote_utils import apply_smote_multilabel
 
@@ -39,29 +39,31 @@ def _prepare_data(
     test_texts: Sequence[str],
     use_smote: bool,
     seed: int,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Word2VecVectorizer, Dict]:
     """
-    Prepare data: TF-IDF vectorization and optional SMOTE.
+    Prepare data: Word2Vec embedding extraction and optional SMOTE.
     
     Returns:
-        x_train: Vectorized training features
+        x_train: Word2Vec document embeddings for training (dense)
         y_train: Training labels (possibly resampled)
-        x_test: Vectorized test features
+        x_test: Word2Vec document embeddings for testing (dense)
+        vectorizer: Fitted Word2VecVectorizer
         smote_stats: Dictionary with SMOTE application details
     """
-    # Step 1: Preprocess Chinese text
-    train_texts_processed = [preprocess_for_tfidf(t) for t in train_texts]
-    test_texts_processed = [preprocess_for_tfidf(t) for t in test_texts]
+    # Step 1: Preprocess Chinese text (already embedded in Word2VecVectorizer)
+    train_texts_list = list(train_texts)
+    test_texts_list = list(test_texts)
 
-    # Step 2: TF-IDF vectorization
-    vectorizer = TfidfVectorizer(
-        max_features=10000,
-        ngram_range=(1, 2),
-        min_df=2,
-        max_df=0.95,
+    # Step 2: Word2Vec vectorization (dense embeddings)
+    vectorizer = Word2VecVectorizer(
+        vector_size=300,
+        window=5,
+        min_count=2,
+        sg=1,  # Skip-gram
+        seed=seed,
     )
-    x_train = vectorizer.fit_transform(train_texts_processed)
-    x_test = vectorizer.transform(test_texts_processed)
+    x_train = vectorizer.fit(train_texts_list).transform(train_texts_list)  # (n_train, 300)
+    x_test = vectorizer.transform(test_texts_list)  # (n_test, 300)
 
     # Step 3-4: Optional class imbalance handling
     y_train = train_labels
@@ -69,15 +71,13 @@ def _prepare_data(
     smote_stats = {"applied": False, "method": "disabled"}
 
     if use_smote:
-        x_train_dense = x_train.toarray().astype(np.float32)
+        # SMOTE works with dense arrays
         x_res, y_res, smote_stats = apply_smote_multilabel(
-            x_train_dense, train_labels, seed=seed
+            x_train.astype(np.float32), train_labels, seed=seed
         )
         x_train_fit = x_res
         y_train = y_res
         smote_stats["applied"] = True
-
-    x_test = x_test.toarray().astype(np.float32) if use_smote else x_test
 
     return x_train_fit, y_train, x_test, vectorizer, smote_stats
 

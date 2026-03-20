@@ -68,11 +68,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--llm_model_name",
         type=str,
-        default="Qwen/Qwen2-7B-Instruct",
-        choices=["Qwen/Qwen2-7B-Instruct", "meta-llama/Llama-3-8B-Instruct"],
-        help="Hugging Face model id for llm_zero_shot/llm_few_shot",
+        default="llama-3.1-8b-instant",
+        choices=["llama-3.1-8b-instant"],
+        help="Groq API model name for llm_zero_shot/llm_few_shot",
     )
-    parser.add_argument("--llm_few_shot_k", type=int, default=3, help="Number of few-shot examples to include in each prompt")
+    parser.add_argument("--llm_few_shot_k", type=int, default=100, help="Number of few-shot examples to include in each prompt")
     parser.add_argument("--llm_max_new_tokens", type=int, default=64, help="Maximum generated tokens for LLM responses")
     parser.add_argument("--llm_temperature", type=float, default=0.0, help="Sampling temperature for LLM decoding")
     return parser.parse_args()

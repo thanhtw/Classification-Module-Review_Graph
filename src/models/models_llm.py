@@ -6,8 +6,7 @@ import time
 from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+from groq import Groq
 
 from src.training.config import LABEL_COLUMNS, LLMConfig
 from src.utils.metrics import compute_metrics
@@ -55,20 +54,20 @@ def _build_prompt(
 ) -> str:
     instruction = (
         "You are a strict multi-label classifier. "
-        "Predict 3 binary labels for the input text and return ONLY valid JSON. "
-        "Keys must be: relevance, concreteness, constructive. "
-        "Values must be integers 0 or 1."
+        "Predict 3 binary labels for the input text. "
+        "CRITICAL: Return ONLY the JSON object on a single line, with no additional text, thinking, or explanation. "
+        "Output format: {\"relevance\": 0 or 1, \"concreteness\": 0 or 1, \"constructive\": 0 or 1}"
     )
 
     lines = [instruction]
     if mode == "few_shot" and few_shot_examples:
-        lines.append("Here are labeled examples:")
+        lines.append("\nExamples:")
         for ex_text, ex_label in few_shot_examples:
             lines.append(_make_example_line(ex_text, ex_label))
 
-    lines.append(f"Text: {text}")
-    lines.append("Answer JSON:")
-    return "\n\n".join(lines)
+    lines.append(f"\nText: {text}")
+    lines.append("Output:")
+    return "\n".join(lines)
 
 
 def _sample_few_shot_examples(
@@ -99,25 +98,17 @@ def run_llm_zero_few_shot(
     if mode not in {"zero_shot", "few_shot"}:
         raise ValueError(f"Unsupported mode: {mode}")
 
-    tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        cfg.model_name,
-        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-        device_map="auto" if torch.cuda.is_available() else None,
-    )
-
-    text_gen = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-        device_map="auto" if torch.cuda.is_available() else None,
-    )
+    # Initialize Groq client
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise ValueError("GROQ_API_KEY environment variable is required")
+    client = Groq(api_key=api_key)
 
     setup_start = time.perf_counter()
     few_shot_examples = _sample_few_shot_examples(train_texts, train_labels, cfg.few_shot_k, seed)
     setup_time = time.perf_counter() - setup_start
 
+    # Prepare inference
     pred_rows: List[np.ndarray] = []
     parse_failures = 0
 
@@ -129,20 +120,26 @@ def run_llm_zero_few_shot(
             few_shot_examples=few_shot_examples,
         )
 
-        gen_kwargs = {
-            "max_new_tokens": cfg.max_new_tokens,
-            "do_sample": cfg.temperature > 0.0,
-            "return_full_text": False,
-        }
-        if cfg.temperature > 0.0:
-            gen_kwargs["temperature"] = max(cfg.temperature, 1e-5)
+        # Call Groq API
+        try:
+            completion = client.chat.completions.create(
+                model=cfg.model_name,  # Use model from config
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=cfg.temperature,
+                max_tokens=cfg.max_new_tokens,
+            )
+            generated = completion.choices[0].message.content
+        except Exception as e:
+            print(f"Groq API error: {e}")
+            generated = ""
 
-        out = text_gen(prompt, **gen_kwargs)
-        generated = out[0]["generated_text"] if out else ""
         pred, ok = _parse_prediction(generated)
         if not ok:
             parse_failures += 1
         pred_rows.append(pred)
+
     infer_time = time.perf_counter() - infer_start
 
     y_pred = np.stack(pred_rows) if pred_rows else np.zeros_like(test_labels)
@@ -153,7 +150,7 @@ def run_llm_zero_few_shot(
         with open(os.path.join(save_dir, "metadata.json"), "w", encoding="utf-8") as f:
             json.dump(
                 {
-                    "model_name": cfg.model_name,
+                    "model_name": f"Groq API ({cfg.model_name})",
                     "mode": mode,
                     "few_shot_k": int(cfg.few_shot_k),
                     "max_new_tokens": int(cfg.max_new_tokens),
@@ -167,8 +164,5 @@ def run_llm_zero_few_shot(
                 ensure_ascii=False,
                 indent=2,
             )
-
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
     return metrics, setup_time, infer_time

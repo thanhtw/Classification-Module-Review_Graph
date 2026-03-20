@@ -70,7 +70,7 @@ class TransformerConfig:
 
 @dataclass
 class LLMConfig:
-    model_name: str = "Qwen/Qwen2-7B-Instruct"
-    max_new_tokens: int = 64
+    model_name: str = "llama-3.1-8b-instant"  # Faster, smaller model with good JSON support
+    max_new_tokens: int = 128  # Increased for safety
     temperature: float = 0.0
-    few_shot_k: int = 3
+    few_shot_k: int = 100

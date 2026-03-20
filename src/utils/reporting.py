@@ -3,8 +3,6 @@ from typing import Dict, List
 
 import pandas as pd
 
-from src.analysis.report_enhanced import generate_summary_report
-
 
 def export_results(rows: List[Dict[str, float]], output_dir: str) -> str:
     os.makedirs(output_dir, exist_ok=True)
@@ -86,8 +84,5 @@ def export_results(rows: List[Dict[str, float]], output_dir: str) -> str:
     print(f"Saved comparison table: {compare_path}")
     print(f"Saved best fold per model: {best_fold_path}")
     print(f"Saved model ranking table: {overall_best_path}")
-    
-    # Generate enhanced summary report
-    generate_summary_report(df, output_dir)
     
     return compare_path

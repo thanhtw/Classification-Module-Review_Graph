@@ -4,6 +4,7 @@ import os
 import copy
 import gzip
 from typing import Dict, Sequence, Tuple
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -140,6 +141,7 @@ def _train_eval(
     scheduler_patience: int = 2,
     scheduler_factor: float = 0.5,
     early_stopping_patience: int = 3,
+    save_dir: str = "",
 ) -> Tuple[Dict[str, float], float, float, nn.Module]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
@@ -178,9 +180,22 @@ def _train_eval(
     best_state = copy.deepcopy(model.state_dict())
     best_val_loss = float("inf")
     no_improve = 0
+    
+    # Initialize history tracking
+    history = {
+        'train_loss': [],
+        'val_loss': [],
+        'train_f1_macro': [],
+        'val_f1_macro': [],
+        'train_f1_micro': [],
+        'val_f1_micro': []
+    }
 
-    for _ in range(epochs):
+    for epoch in range(epochs):
         running_loss = 0.0
+        train_logits = []
+        train_labels_collected = []
+        
         for bx, by in train_loader:
             bx, by = bx.to(device), by.to(device)
             optimizer.zero_grad()
@@ -190,19 +205,54 @@ def _train_eval(
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             running_loss += float(loss.item())
+            
+            # Collect for metrics computation
+            train_logits.append(logits.detach().cpu().numpy())
+            train_labels_collected.append(by.cpu().numpy())
+
+        avg_train_loss = running_loss / max(1, len(train_loader))
+        history['train_loss'].append(avg_train_loss)
+        
+        # Compute training metrics
+        if train_logits:
+            train_logits_all = np.vstack(train_logits)
+            train_labels_all = np.vstack(train_labels_collected)
+            train_preds = (1 / (1 + np.exp(-train_logits_all)) > 0.5).astype(int)
+            train_metrics = compute_metrics(train_labels_all, train_preds)
+            history['train_f1_macro'].append(train_metrics.get('f1_macro_mean', 0))
+            history['train_f1_micro'].append(train_metrics.get('f1_micro_mean', 0))
 
         # Keep training policy consistent with biLstmGlove.py.
         if len(train_loader) > 0:
-            scheduler.step(running_loss / len(train_loader))
+            scheduler.step(avg_train_loss)
 
         model.eval()
         val_loss = 0.0
+        val_logits = []
+        val_labels_collected = []
+        
         with torch.no_grad():
             for bx, by in val_loader:
                 bx, by = bx.to(device), by.to(device)
                 logits = model(bx)
                 val_loss += float(criterion(logits, by).item())
+                
+                # Collect for metrics computation
+                val_logits.append(logits.cpu().numpy())
+                val_labels_collected.append(by.cpu().numpy())
+                
         val_loss = val_loss / max(1, len(val_loader))
+        history['val_loss'].append(val_loss)
+        
+        # Compute validation metrics
+        if val_logits:
+            val_logits_all = np.vstack(val_logits)
+            val_labels_all = np.vstack(val_labels_collected)
+            val_preds = (1 / (1 + np.exp(-val_logits_all)) > 0.5).astype(int)
+            val_metrics = compute_metrics(val_labels_all, val_preds)
+            history['val_f1_macro'].append(val_metrics.get('f1_macro_mean', 0))
+            history['val_f1_micro'].append(val_metrics.get('f1_micro_mean', 0))
+        
         model.train()
 
         if val_loss < best_val_loss - 1e-6:
@@ -228,6 +278,14 @@ def _train_eval(
 
     logits = np.vstack(all_logits)
     preds = (1 / (1 + np.exp(-logits)) > 0.5).astype(int)
+    
+    # Save history if save_dir provided
+    if save_dir:
+        Path(save_dir).mkdir(parents=True, exist_ok=True)
+        history_file = Path(save_dir) / "training_history.json"
+        with open(history_file, 'w') as f:
+            json.dump(history, f, indent=2)
+    
     return compute_metrics(y_test, preds), train_time, infer_time, model
 
 
@@ -324,6 +382,7 @@ def run_lstm_like(
         cfg.scheduler_patience,
         cfg.scheduler_factor,
         cfg.early_stopping_patience,
+        save_dir,
     )
 
     if save_dir:
@@ -497,6 +556,7 @@ def run_cnn_attention(
         cfg.scheduler_patience,
         cfg.scheduler_factor,
         cfg.early_stopping_patience,
+        save_dir,
     )
 
     if save_dir:

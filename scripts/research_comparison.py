@@ -38,6 +38,7 @@ from research_modules import (
     # Visualizations
     generate_smote_visualization,
     generate_confusion_matrix_visualizations,
+    generate_per_label_confusion_matrices,
     generate_training_curves,
     generate_comprehensive_heatmaps,
     generate_model_comparison_visualizations,
@@ -250,6 +251,7 @@ def run_research_comparison(n_folds=10, seed=42):
         smote_vis = generate_smote_visualization(results_dir)
         generate_model_comparison_visualizations(comparison_results, results_dir)
         cm_vis = generate_confusion_matrix_visualizations(results_dir)
+        per_label_cm_dir = generate_per_label_confusion_matrices(results_dir)
         curves_vis = generate_training_curves(results_dir)
         comp_csv = generate_comprehensive_metrics_report(comparison_results, results_dir)
         heatmap_vis = generate_comprehensive_heatmaps(comparison_results, results_dir)
@@ -268,6 +270,8 @@ def run_research_comparison(n_folds=10, seed=42):
         print(f"  ✓ {results_dir}/model_multilabel_metrics.png")
         if cm_vis:
             print(f"  ✓ {cm_vis}")
+        if per_label_cm_dir:
+            print(f"  ✓ Per-label confusion matrices: {per_label_cm_dir}/")
         if curves_vis:
             print(f"  ✓ {curves_vis}")
         if heatmap_vis:

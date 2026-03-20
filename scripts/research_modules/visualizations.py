@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from src.training.config import LABEL_COLUMNS
+from sklearn.metrics import confusion_matrix
 
 
 def load_smote_analysis(results_dir="results/modular_multimodel/global_train_data_analysis"):
@@ -137,7 +138,6 @@ def generate_confusion_matrix_visualizations(output_dir="results/research_compar
                     y_true = np.load(label_files[0])
                     
                     # For multilabel, use micro-averaged confusion matrix
-                    from sklearn.metrics import confusion_matrix
                     y_true_flat = y_true.ravel()
                     y_pred_flat = y_pred.ravel()
                     
@@ -170,6 +170,121 @@ def generate_confusion_matrix_visualizations(output_dir="results/research_compar
         plt.close()
         print("✗ No confusion matrices could be generated")
         return None
+
+
+def generate_per_label_confusion_matrices(output_dir="results/research_comparison"):
+    """Generate normalized confusion matrices for each class (like the attached image)
+    
+    Creates normalized heatmaps showing per-label performance for each model.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    print("\n📊 Generating per-label normalized confusion matrices...")
+    
+    model_artifacts_dir = Path("results/modular_multimodel/model_artifacts")
+    if not model_artifacts_dir.exists():
+        print("⚠ Model artifacts directory not found")
+        return
+    
+    model_dirs = sorted([d for d in model_artifacts_dir.iterdir() if d.is_dir()])
+    if not model_dirs:
+        print("⚠ No model directories found")
+        return
+    
+    labels = LABEL_COLUMNS  # ['relevance', 'concreteness', 'constructive']
+    num_labels = len(labels)
+    
+    # Create subdirectory for confusion matrices
+    cm_out_dir = output_dir / "per_label_confusion_matrices"
+    cm_out_dir.mkdir(parents=True, exist_ok=True)
+    
+    for model_dir in model_dirs:
+        model_name = model_dir.name
+        
+        try:
+            # Find predictions and labels from first fold
+            fold_dir = list(model_dir.glob("fold_*"))
+            if not fold_dir:
+                print(f"  ⚠ {model_name}: No fold directory found")
+                continue
+            
+            fold_path = fold_dir[0]
+            
+            # Try to find predictions and labels
+            pred_files = list(fold_path.glob("predictions*.npy"))
+            label_files = list(fold_path.glob("y_test*.npy"))
+            
+            if not pred_files or not label_files:
+                # Try parent directory
+                pred_files = list(model_dir.glob("**/predictions*.npy"))
+                label_files = list(model_dir.glob("**/y_test*.npy"))
+            
+            if not pred_files or not label_files:
+                print(f"  ⚠ {model_name}: No prediction/label files found")
+                continue
+            
+            y_pred = np.load(pred_files[0])  # Shape: (n_samples, n_labels)
+            y_true = np.load(label_files[0])  # Shape: (n_samples, n_labels)
+            
+            # Create figure with subplots for each label
+            fig, axes = plt.subplots(1, num_labels, figsize=(5*num_labels, 5))
+            if num_labels == 1:
+                axes = [axes]
+            
+            fig.suptitle(f'Normalized Confusion Matrices - {model_name.replace("_", " ").title()}', 
+                        fontsize=14, fontweight='bold', y=0.98)
+            
+            for label_idx, label_name in enumerate(labels):
+                # Extract predictions and true labels for this class
+                y_true_class = y_true[:, label_idx]
+                y_pred_class = y_pred[:, label_idx]
+                
+                # Create confusion matrix
+                cm = confusion_matrix(y_true_class, y_pred_class, labels=[0, 1])
+                
+                # Normalize by true label (row-wise normalization)
+                # This shows: for each true label, what % was predicted as each class
+                cm_normalized = cm.astype('float') / (cm.sum(axis=1, keepdims=True) + 1e-8)
+                
+                # Plot normalized heatmap
+                ax = axes[label_idx]
+                sns.heatmap(cm_normalized, 
+                           annot=True, 
+                           fmt='.3f', 
+                           cmap='Blues', 
+                           ax=ax,
+                           cbar=True,
+                           cbar_kws={'label': 'Proportion'},
+                           xticklabels=[f'{label_name}\nNeg', f'{label_name}\nPos'],
+                           yticklabels=['True Neg', 'True Pos'],
+                           vmin=0, vmax=1,
+                           linewidths=1.5,
+                           linecolor='gray',
+                           square=True)
+                
+                ax.set_title(f'{label_name.replace("_", " ").title()}', 
+                            fontsize=12, fontweight='bold', pad=10)
+                ax.set_ylabel('True Label', fontweight='bold', fontsize=10)
+                ax.set_xlabel('Predicted Label', fontweight='bold', fontsize=10)
+                
+                # Add count info below heatmap
+                acc = cm_normalized[0, 0] + cm_normalized[1, 1]
+                
+            plt.tight_layout()
+            
+            # Save
+            cm_file = cm_out_dir / f"confusion_matrix_{model_name}.png"
+            plt.savefig(cm_file, dpi=300, bbox_inches='tight')
+            print(f"  ✓ {model_name}: {cm_file}")
+            plt.close()
+            
+        except Exception as e:
+            print(f"  ⚠ {model_name}: {str(e)[:100]}")
+            plt.close()
+    
+    print(f"✓ Per-label confusion matrices saved to: {cm_out_dir}")
+    return cm_out_dir
 
 
 def generate_training_curves(output_dir="results/research_comparison"):

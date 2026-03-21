@@ -18,30 +18,34 @@ from sklearn.model_selection import KFold, train_test_split
 from src.analysis.analysis_utils import export_train_smote_analysis
 from src.training.config import (
     AVAILABLE_MODELS,
-    CNNConfig,
     CommonConfig,
     LABEL_COLUMNS,
     LLMConfig,
     RNNConfig,
     TransformerConfig,
+    get_env_float,
+    get_env_int,
+    load_env_file,
 )
 from src.data.preprocessor import load_and_clean_data, set_seed
 from src.models.models_llm import run_llm_zero_few_shot
-from src.models.models_nn import run_cnn_attention, run_lstm_like
+from src.models.models_nn import run_lstm_like
 from src.models.models_ml import run_linear_svm, run_naive_bayes, run_logistic_regression
 from src.models.models_transformers import run_transformer
 from src.utils.reporting import export_results
 
 
 def parse_args() -> argparse.Namespace:
+    load_env_file(project_root / ".env")
+
     parser = argparse.ArgumentParser(
-        description="Train/test modular models (BERT, RoBERTa, CNN, LSTM/BiLSTM, LinearSVM, NaiveBayes, LogisticRegression, optional LLM) on cleaned_3label_data.csv"
+        description="Train/test modular models (BERT, RoBERTa, LSTM/BiLSTM, LinearSVM, NaiveBayes, LogisticRegression, optional LLM) on cleaned_3label_data.csv"
     )
     parser.add_argument("--data_path", type=str, default="data/cleaned_3label_data.csv")
     parser.add_argument(
         "--models",
         nargs="+",
-        default=["bert", "roberta", "linear_svm", "naive_bayes", "logistic_regression", "cnn_attention", "lstm", "bilstm"],
+        default=["bert", "roberta", "linear_svm", "naive_bayes", "logistic_regression", "lstm", "bilstm"],
         choices=AVAILABLE_MODELS,
     )
     parser.add_argument("--test_size", type=float, default=0.2, help="Used only when --n_folds <= 1")
@@ -50,10 +54,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_dir", type=str, default="results/modular_multimodel")
     parser.add_argument("--no_smote", action="store_true", help="Disable SMOTE on training split")
 
-    parser.add_argument("--rnn_epochs", type=int, default=10)
-    parser.add_argument("--cnn_epochs", type=int, default=5)
-    parser.add_argument("--bert_epochs", type=int, default=5)
-    parser.add_argument("--roberta_epochs", type=int, default=5)
+    parser.add_argument("--rnn_epochs", type=int, default=get_env_int("TRAIN_RNN_EPOCHS", 30))
+    parser.add_argument("--bert_epochs", type=int, default=get_env_int("TRAIN_BERT_EPOCHS", 30))
+    parser.add_argument("--roberta_epochs", type=int, default=get_env_int("TRAIN_ROBERTA_EPOCHS", 30))
+    parser.add_argument("--rnn_lr", type=float, default=get_env_float("TRAIN_RNN_LR", 1e-3))
+    parser.add_argument("--bert_lr", type=float, default=get_env_float("TRAIN_BERT_LR", 2e-5))
+    parser.add_argument("--roberta_lr", type=float, default=get_env_float("TRAIN_ROBERTA_LR", 2e-5))
     parser.add_argument("--glove_path", type=str, default="", help="Path to pretrained word vectors text file")
     parser.add_argument("--freeze_glove", action="store_true", help="Freeze embedding layer initialized by pretrained vectors")
 
@@ -110,7 +116,6 @@ def main() -> None:
         "linear_svm",
         "naive_bayes",
         "logistic_regression",
-        "cnn_attention",
         "lstm",
         "bilstm",
         "llm_zero_shot",
@@ -120,7 +125,7 @@ def main() -> None:
     if not models_to_run:
         raise ValueError(
             "No model supported by this runner was selected. "
-            "Use --models with any of: bert roberta linear_svm naive_bayes logistic_regression cnn_attention lstm bilstm llm_zero_shot llm_few_shot"
+            "Use --models with any of: bert roberta linear_svm naive_bayes logistic_regression lstm bilstm llm_zero_shot llm_few_shot"
         )
 
     common = CommonConfig(seed=args.seed, test_size=args.test_size, use_smote=(not args.no_smote), output_dir=args.output_dir)
@@ -133,18 +138,13 @@ def main() -> None:
 
     rnn_cfg = RNNConfig(
         epochs=args.rnn_epochs,
+        lr=args.rnn_lr,
         embedding_dim=300,
         glove_path=args.glove_path,
         glove_trainable=(not args.freeze_glove),
     )
-    cnn_cfg = CNNConfig(
-        epochs=args.cnn_epochs,
-        embedding_dim=300,
-        glove_path=args.glove_path,
-        glove_trainable=(not args.freeze_glove),
-    )
-    bert_cfg = TransformerConfig(model_name=args.bert_model_name, epochs=args.bert_epochs)
-    roberta_cfg = TransformerConfig(model_name=args.roberta_model_name, epochs=args.roberta_epochs)
+    bert_cfg = TransformerConfig(model_name=args.bert_model_name, epochs=args.bert_epochs, lr=args.bert_lr)
+    roberta_cfg = TransformerConfig(model_name=args.roberta_model_name, epochs=args.roberta_epochs, lr=args.roberta_lr)
     llm_cfg = LLMConfig(
         model_name=args.llm_model_name,
         max_new_tokens=args.llm_max_new_tokens,
@@ -254,17 +254,6 @@ def main() -> None:
                     train_labels=y_train,
                     test_texts=test_texts,
                     test_labels=y_test,
-                    use_smote=common.use_smote,
-                    seed=seed,
-                    save_dir=model_artifact_dir,
-                )
-            elif model_name == "cnn_attention":
-                metrics, train_t, infer_t = run_cnn_attention(
-                    train_texts=train_texts,
-                    train_labels=y_train,
-                    test_texts=test_texts,
-                    test_labels=y_test,
-                    cfg=cnn_cfg,
                     use_smote=common.use_smote,
                     seed=seed,
                     save_dir=model_artifact_dir,

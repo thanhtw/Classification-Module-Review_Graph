@@ -58,7 +58,7 @@ def run_research_comparison(n_folds=10, seed=42):
     print(f"  - LLM Model: llama-3.1-8b-instant (Groq API, 8B parameters)")
     print(f"  - LLM Approaches: Zero-shot + Few-shot (k=100)")
     print(f"  - ML Models: Linear SVM, Logistic Regression, Naive Bayes")
-    print(f"  - DL Models: CNN, LSTM, BiLSTM")
+    print(f"  - DL Models: LSTM, BiLSTM")
     print(f"  - Transformers: BERT, RoBERTa")
     print(f"  - Folds: {n_folds}")
     print(f"  - Seed: {seed}")
@@ -74,7 +74,6 @@ def run_research_comparison(n_folds=10, seed=42):
         ("Naive Bayes", "naive_bayes"),
         
         # Deep Learning Models
-        ("CNN + Attention", "cnn_attention"),
         ("LSTM", "lstm"),
         ("BiLSTM", "bilstm"),
         
@@ -224,7 +223,7 @@ def run_research_comparison(n_folds=10, seed=42):
         
         categories = {
             'Machine Learning': ['Linear SVM', 'Logistic Regression', 'Naive Bayes'],
-            'Deep Learning': ['CNN + Attention', 'LSTM', 'BiLSTM'],
+            'Deep Learning': ['LSTM', 'BiLSTM'],
             'Transformers': ['BERT', 'RoBERTa'],
             'LLM (Groq API)': ['llama-3.1-8b-instant (LLM, Zero-shot)', 'llama-3.1-8b-instant (LLM, Few-shot k=100)'],
         }

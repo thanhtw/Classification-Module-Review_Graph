@@ -12,6 +12,94 @@ from src.training.config import LABEL_COLUMNS
 from sklearn.metrics import confusion_matrix
 
 
+def _load_best_fold_map() -> dict:
+    """Load model -> best fold mapping from training summary CSV."""
+    best_fold_csv = Path("results/modular_multimodel/best_fold_per_model.csv")
+    if not best_fold_csv.exists():
+        return {}
+
+    try:
+        df = pd.read_csv(best_fold_csv)
+    except Exception:
+        return {}
+
+    model_col = None
+    fold_col = None
+    for candidate in ["model", "Model", "model_key"]:
+        if candidate in df.columns:
+            model_col = candidate
+            break
+    for candidate in ["best_fold", "fold", "Fold"]:
+        if candidate in df.columns:
+            fold_col = candidate
+            break
+
+    if model_col is None or fold_col is None:
+        return {}
+
+    mapping = {}
+    for _, row in df.iterrows():
+        try:
+            mapping[str(row[model_col])] = int(row[fold_col])
+        except Exception:
+            continue
+    return mapping
+
+
+def _to_binary_label_matrix(arr: np.ndarray, n_labels: int) -> np.ndarray:
+    """Convert model outputs to binary multilabel matrix with shape (n_samples, n_labels)."""
+    matrix = np.asarray(arr)
+    if matrix.ndim == 1:
+        matrix = matrix.reshape(-1, n_labels)
+    if matrix.ndim != 2:
+        raise ValueError(f"Expected 2D array, got shape {matrix.shape}")
+    if matrix.shape[1] != n_labels:
+        raise ValueError(f"Expected {n_labels} labels, got shape {matrix.shape}")
+
+    # If predictions are logits/probabilities, threshold at 0.5.
+    if matrix.dtype.kind in {"f", "c"}:
+        return (matrix > 0.5).astype(int)
+    return (matrix >= 1).astype(int)
+
+
+def _build_3x3_label_confusion(y_true: np.ndarray, y_pred: np.ndarray, n_labels: int) -> np.ndarray:
+    """
+    Build label-to-label confusion matrix for multilabel predictions.
+
+    Rule:
+    - Bit 0 -> relevance
+    - Bit 1 -> concreteness
+    - Bit 2 -> constructive
+    - For each true positive label i and each predicted positive label j, increment [i, j].
+    """
+    cm = np.zeros((n_labels, n_labels), dtype=int)
+    for sample_idx in range(y_true.shape[0]):
+        true_labels = y_true[sample_idx]
+        pred_labels = y_pred[sample_idx]
+        for true_idx in range(n_labels):
+            if true_labels[true_idx] == 1:
+                for pred_idx in range(n_labels):
+                    if pred_labels[pred_idx] == 1:
+                        cm[true_idx, pred_idx] += 1
+    return cm
+
+
+def _get_model_fold_dir(model_dir: Path, best_fold_map: dict) -> Path | None:
+    """Pick fold directory from best fold map; fallback to first available fold."""
+    model_name = model_dir.name
+    fold_dirs = sorted([d for d in model_dir.glob("fold_*") if d.is_dir()])
+    if not fold_dirs:
+        return None
+
+    best_fold = best_fold_map.get(model_name)
+    if best_fold is not None:
+        candidate = model_dir / f"fold_{best_fold}"
+        if candidate.exists():
+            return candidate
+
+    return fold_dirs[0]
+
+
 def load_smote_analysis(results_dir="results/modular_multimodel/global_train_data_analysis"):
     """Load SMOTE analysis data from results directory"""
     smote_file = Path(results_dir) / "train_smote_analysis_summary.json"
@@ -89,7 +177,7 @@ def generate_confusion_matrix_visualizations(output_dir="results/research_compar
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    print("\n🔍 Generating confusion matrices for ALL models...")
+    print("\n🔍 Generating 3×3 confusion matrices for ALL models...")
     
     model_artifacts_dir = Path("results/modular_multimodel/model_artifacts")
     if not model_artifacts_dir.exists():
@@ -116,42 +204,51 @@ def generate_confusion_matrix_visualizations(output_dir="results/research_compar
     confusion_fig.suptitle(f'Confusion Matrices: All {num_models} Models', fontsize=16, fontweight='bold')
     axes = axes.flatten()
     
+    best_fold_map = _load_best_fold_map()
+    n_labels = len(LABEL_COLUMNS)
     success_count = 0
     for model_idx, model_dir in enumerate(model_dirs):
         model_name = model_dir.name
         
         try:
-            # Try to find predictions files
-            pred_files = list(model_dir.glob("*/predictions*.npy"))
-            
-            if pred_files:
-                # Load predictions from first fold
-                pred_file = pred_files[0]
-                y_pred = np.load(pred_file)
-                
-                # Try to find true labels
-                label_files = list(model_dir.parent.glob("**/y_val*.npy"))
-                if not label_files:
-                    label_files = list(model_dir.glob("*/y_val*.npy"))
-                
-                if label_files:
-                    y_true = np.load(label_files[0])
-                    
-                    # For multilabel, use micro-averaged confusion matrix
-                    y_true_flat = y_true.ravel()
-                    y_pred_flat = y_pred.ravel()
-                    
-                    cm = confusion_matrix(y_true_flat, y_pred_flat)
-                    
-                    # Plot heatmap
-                    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=axes[model_idx],
-                               cbar=True, xticklabels=['Negative', 'Positive'], 
-                               yticklabels=['Negative', 'Positive'], vmin=0)
-                    axes[model_idx].set_title(f'{model_name}', fontsize=11, fontweight='bold')
-                    axes[model_idx].set_ylabel('True Label', fontweight='bold', fontsize=9)
-                    axes[model_idx].set_xlabel('Predicted Label', fontweight='bold', fontsize=9)
-                    success_count += 1
-                    print(f"  ✓ {model_name}")
+            fold_dir = _get_model_fold_dir(model_dir, best_fold_map)
+            if fold_dir is None:
+                print(f"  ⚠ {model_name}: no fold directories")
+                continue
+
+            pred_file = fold_dir / "predictions.npy"
+            label_file = fold_dir / "labels.npy"
+            if not pred_file.exists() or not label_file.exists():
+                print(f"  ⚠ {model_name}: missing predictions.npy/labels.npy")
+                continue
+
+            y_pred = _to_binary_label_matrix(np.load(pred_file), n_labels)
+            y_true = _to_binary_label_matrix(np.load(label_file), n_labels)
+            if y_true.shape != y_pred.shape:
+                print(f"  ⚠ {model_name}: shape mismatch {y_true.shape} vs {y_pred.shape}")
+                continue
+
+            cm = _build_3x3_label_confusion(y_true, y_pred, n_labels)
+
+            sns.heatmap(
+                cm,
+                annot=True,
+                fmt='d',
+                cmap='Blues',
+                ax=axes[model_idx],
+                cbar=True,
+                xticklabels=LABEL_COLUMNS,
+                yticklabels=LABEL_COLUMNS,
+                vmin=0,
+                linewidths=0.5,
+                linecolor='black',
+                square=True,
+            )
+            axes[model_idx].set_title(f'{model_name}', fontsize=11, fontweight='bold')
+            axes[model_idx].set_ylabel('True Label', fontweight='bold', fontsize=9)
+            axes[model_idx].set_xlabel('Predicted Label', fontweight='bold', fontsize=9)
+            success_count += 1
+            print(f"  ✓ {model_name}")
         except Exception as e:
             print(f"  ⚠ {model_name}: {e}")
     
@@ -173,14 +270,17 @@ def generate_confusion_matrix_visualizations(output_dir="results/research_compar
 
 
 def generate_per_label_confusion_matrices(output_dir="results/research_comparison"):
-    """Generate normalized confusion matrices for each class (like the attached image)
-    
-    Creates normalized heatmaps showing per-label performance for each model.
+    """Generate one 3x3 label confusion matrix per model using bit-position mapping.
+
+    Mapping:
+    - bit 0: relevance
+    - bit 1: concreteness
+    - bit 2: constructive
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    print("\n📊 Generating per-label normalized confusion matrices...")
+    print("\n📊 Generating 3×3 label confusion matrices...")
     
     model_artifacts_dir = Path("results/modular_multimodel/model_artifacts")
     if not model_artifacts_dir.exists():
@@ -192,8 +292,9 @@ def generate_per_label_confusion_matrices(output_dir="results/research_compariso
         print("⚠ No model directories found")
         return
     
-    labels = LABEL_COLUMNS  # ['relevance', 'concreteness', 'constructive']
+    labels = LABEL_COLUMNS
     num_labels = len(labels)
+    best_fold_map = _load_best_fold_map()
     
     # Create subdirectory for confusion matrices
     cm_out_dir = output_dir / "per_label_confusion_matrices"
@@ -202,86 +303,86 @@ def generate_per_label_confusion_matrices(output_dir="results/research_compariso
     for model_dir in model_dirs:
         model_name = model_dir.name
         
+        fig = None
         try:
-            # Find predictions and labels from first fold
-            fold_dir = list(model_dir.glob("fold_*"))
-            if not fold_dir:
-                print(f"  ⚠ {model_name}: No fold directory found")
+            fold_path = _get_model_fold_dir(model_dir, best_fold_map)
+            if fold_path is None:
+                print(f"  ⚠ {model_name}: no fold directory found")
                 continue
-            
-            fold_path = fold_dir[0]
-            
-            # Try to find predictions and labels
-            pred_files = list(fold_path.glob("predictions*.npy"))
-            label_files = list(fold_path.glob("y_test*.npy"))
-            
-            if not pred_files or not label_files:
-                # Try parent directory
-                pred_files = list(model_dir.glob("**/predictions*.npy"))
-                label_files = list(model_dir.glob("**/y_test*.npy"))
-            
-            if not pred_files or not label_files:
-                print(f"  ⚠ {model_name}: No prediction/label files found")
+
+            pred_file = fold_path / "predictions.npy"
+            label_file = fold_path / "labels.npy"
+            if not pred_file.exists() or not label_file.exists():
+                print(f"  ⚠ {model_name}: predictions.npy/labels.npy not found in {fold_path.name}")
                 continue
-            
-            y_pred = np.load(pred_files[0])  # Shape: (n_samples, n_labels)
-            y_true = np.load(label_files[0])  # Shape: (n_samples, n_labels)
-            
-            # Create figure with subplots for each label
-            fig, axes = plt.subplots(1, num_labels, figsize=(5*num_labels, 5))
-            if num_labels == 1:
-                axes = [axes]
-            
-            fig.suptitle(f'Normalized Confusion Matrices - {model_name.replace("_", " ").title()}', 
-                        fontsize=14, fontweight='bold', y=0.98)
-            
-            for label_idx, label_name in enumerate(labels):
-                # Extract predictions and true labels for this class
-                y_true_class = y_true[:, label_idx]
-                y_pred_class = y_pred[:, label_idx]
-                
-                # Create confusion matrix
-                cm = confusion_matrix(y_true_class, y_pred_class, labels=[0, 1])
-                
-                # Normalize by true label (row-wise normalization)
-                # This shows: for each true label, what % was predicted as each class
-                cm_normalized = cm.astype('float') / (cm.sum(axis=1, keepdims=True) + 1e-8)
-                
-                # Plot normalized heatmap
-                ax = axes[label_idx]
-                sns.heatmap(cm_normalized, 
-                           annot=True, 
-                           fmt='.3f', 
-                           cmap='Blues', 
-                           ax=ax,
-                           cbar=True,
-                           cbar_kws={'label': 'Proportion'},
-                           xticklabels=[f'{label_name}\nNeg', f'{label_name}\nPos'],
-                           yticklabels=['True Neg', 'True Pos'],
-                           vmin=0, vmax=1,
-                           linewidths=1.5,
-                           linecolor='gray',
-                           square=True)
-                
-                ax.set_title(f'{label_name.replace("_", " ").title()}', 
-                            fontsize=12, fontweight='bold', pad=10)
-                ax.set_ylabel('True Label', fontweight='bold', fontsize=10)
-                ax.set_xlabel('Predicted Label', fontweight='bold', fontsize=10)
-                
-                # Add count info below heatmap
-                acc = cm_normalized[0, 0] + cm_normalized[1, 1]
-                
+
+            y_pred = _to_binary_label_matrix(np.load(pred_file), num_labels)
+            y_true = _to_binary_label_matrix(np.load(label_file), num_labels)
+            if y_true.shape != y_pred.shape:
+                print(f"  ⚠ {model_name}: shape mismatch {y_true.shape} vs {y_pred.shape}")
+                continue
+
+            cm = _build_3x3_label_confusion(y_true, y_pred, num_labels)
+            row_totals = cm.sum(axis=1)
+            per_label_accuracy = np.divide(
+                np.diag(cm),
+                np.maximum(row_totals, 1),
+                dtype=float,
+            )
+            avg_accuracy = float(np.mean(per_label_accuracy))
+
+            fig, ax = plt.subplots(figsize=(8.5, 7.2))
+            sns.heatmap(
+                cm,
+                annot=True,
+                fmt='d',
+                cmap='Blues',
+                ax=ax,
+                cbar=True,
+                cbar_kws={'label': 'Number of Instances'},
+                xticklabels=labels,
+                yticklabels=labels,
+                linewidths=1.2,
+                linecolor='black',
+                square=True,
+            )
+
+            fold_num = fold_path.name.replace("fold_", "")
+            ax.set_title(
+                f"CONFUSION MATRIX - {model_name.upper()} (Fold {fold_num})\n"
+                f"3 Classification Labels: {', '.join(labels)}",
+                fontsize=12,
+                fontweight='bold',
+                pad=12,
+            )
+            ax.set_ylabel('True Label', fontweight='bold', fontsize=10)
+            ax.set_xlabel('Predicted Label', fontweight='bold', fontsize=10)
+
+            metrics_text = (
+                f"Average Accuracy per Label: {avg_accuracy:.4f}\n\n"
+                "Per-Label Accuracy:\n"
+                f"{labels[0]}: {per_label_accuracy[0]:.4f}\n"
+                f"{labels[1]}: {per_label_accuracy[1]:.4f}\n"
+                f"{labels[2]}: {per_label_accuracy[2]:.4f}"
+            )
+            fig.text(
+                0.78,
+                0.84,
+                metrics_text,
+                fontsize=8,
+                va='top',
+                bbox={'boxstyle': 'round', 'facecolor': '#C9E7F0', 'alpha': 0.9, 'edgecolor': 'gray'},
+            )
+
             plt.tight_layout()
-            
-            # Save
-            cm_file = cm_out_dir / f"confusion_matrix_{model_name}.png"
+            cm_file = cm_out_dir / f"confusion_matrix_3labels_{model_name}_{fold_path.name}.png"
             plt.savefig(cm_file, dpi=300, bbox_inches='tight')
             print(f"  ✓ {model_name}: {cm_file}")
             plt.close()
-            
         except Exception as e:
             print(f"  ⚠ {model_name}: {str(e)[:100]}")
-            plt.close()
+            if fig is not None:
+                plt.close(fig)
     
     print(f"✓ Per-label confusion matrices saved to: {cm_out_dir}")
     return cm_out_dir

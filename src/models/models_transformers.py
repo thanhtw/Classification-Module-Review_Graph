@@ -9,7 +9,7 @@ from torch.utils.data import Dataset
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, Trainer, TrainingArguments
 
 from src.training.config import TransformerConfig
-from src.utils.metrics import compute_metrics
+from src.utils.metrics import apply_per_label_thresholds, compute_metrics, tune_per_label_thresholds
 from src.utils.smote import apply_smote_multilabel
 
 
@@ -87,11 +87,27 @@ def run_transformer(
         tr_ids_res = np.clip(np.rint(comb_res[:, :seq_len]), 0, tokenizer.vocab_size - 1).astype(np.int64)
         tr_mask_res = np.clip(np.rint(comb_res[:, seq_len:]), 0, 1).astype(np.int64)
 
-    ds_train = HFDataset(tr_ids_res, tr_mask_res, y_train_res)
+    # Build an internal validation split for per-label threshold tuning.
+    n_train = len(y_train_res)
+    if n_train >= 10:
+        rng = np.random.default_rng(seed)
+        perm = rng.permutation(n_train)
+        val_n = max(1, int(round(0.1 * n_train)))
+        tr_idx = perm[val_n:]
+        va_idx = perm[:val_n]
+        if len(tr_idx) == 0:
+            tr_idx = perm
+            va_idx = perm[:1]
+    else:
+        tr_idx = np.arange(n_train)
+        va_idx = np.arange(n_train)
+
+    ds_train = HFDataset(tr_ids_res[tr_idx], tr_mask_res[tr_idx], y_train_res[tr_idx])
+    ds_val = HFDataset(tr_ids_res[va_idx], tr_mask_res[va_idx], y_train_res[va_idx])
     ds_test = HFDataset(np.asarray(test_enc["input_ids"]), np.asarray(test_enc["attention_mask"]), test_labels)
 
-    pos = y_train_res.sum(axis=0)
-    neg = len(y_train_res) - pos
+    pos = y_train_res[tr_idx].sum(axis=0)
+    neg = len(y_train_res[tr_idx]) - pos
     pos_weight = torch.FloatTensor((neg / (pos + 1e-6)).astype(np.float32))
 
     args = TrainingArguments(
@@ -103,6 +119,7 @@ def run_transformer(
         weight_decay=cfg.weight_decay,
         save_strategy="no",
         report_to="none",
+        disable_tqdm=False,
         dataloader_pin_memory=False,
         use_cpu=not torch.cuda.is_available(),
         fp16=torch.cuda.is_available(),
@@ -113,19 +130,25 @@ def run_transformer(
         model=model,
         args=args,
         train_dataset=ds_train,
-        eval_dataset=ds_test,
+        eval_dataset=ds_val,
     )
 
     tr_start = time.perf_counter()
     trainer.train()
     train_time = time.perf_counter() - tr_start
 
+    val_pred_out = trainer.predict(ds_val)
+    val_logits = _extract_logits(val_pred_out)
+    val_probs = 1 / (1 + np.exp(-val_logits))
+    tuned_thresholds = tune_per_label_thresholds(y_train_res[va_idx].astype(int), val_probs)
+
     inf_start = time.perf_counter()
     pred_out = trainer.predict(ds_test)
     infer_time = time.perf_counter() - inf_start
 
     logits = _extract_logits(pred_out)
-    preds = (1 / (1 + np.exp(-logits)) > 0.5).astype(int)
+    probs = 1 / (1 + np.exp(-logits))
+    preds = apply_per_label_thresholds(probs, tuned_thresholds)
     metrics = compute_metrics(test_labels, preds)
 
     if save_dir:
@@ -142,7 +165,7 @@ def run_transformer(
                 {
                     "model_name": cfg.model_name,
                     "max_len": cfg.max_len,
-                    "threshold": 0.5,
+                    "thresholds": tuned_thresholds.tolist(),
                     "use_smote": bool(use_smote),
                     "smote_stats": smote_stats,
                     "train_size_before": int(len(train_labels)),

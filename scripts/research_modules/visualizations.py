@@ -1,12 +1,17 @@
 """Module for generating visualizations (SMOTE, confusion matrices, training curves, heatmaps)"""
 
 import json
+import sys
 from pathlib import Path
 from datetime import datetime
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+project_root = Path(__file__).resolve().parents[2]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 from src.training.config import LABEL_COLUMNS
 from sklearn.metrics import confusion_matrix

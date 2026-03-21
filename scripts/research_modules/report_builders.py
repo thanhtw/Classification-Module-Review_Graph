@@ -5,6 +5,10 @@ import json
 from pathlib import Path
 from datetime import datetime
 
+project_root = Path(__file__).resolve().parents[2]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 from src.data.preprocessor import load_and_clean_data
 from src.training.config import LABEL_COLUMNS
 

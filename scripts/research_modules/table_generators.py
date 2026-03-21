@@ -1,7 +1,12 @@
 """Module for generating comprehensive data tables and reports"""
 
+import sys
 from pathlib import Path
 import pandas as pd
+
+project_root = Path(__file__).resolve().parents[2]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 
 def generate_comprehensive_metrics_report(comparison_results, output_dir="results/research_comparison"):

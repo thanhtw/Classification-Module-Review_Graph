@@ -13,7 +13,8 @@ from typing import Dict, List
 
 import numpy as np
 import torch
-from sklearn.model_selection import KFold, train_test_split
+from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
+from tqdm.auto import tqdm
 
 from src.analysis.analysis_utils import export_train_smote_analysis
 from src.training.config import (
@@ -84,20 +85,52 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _make_folds(n_samples: int, n_folds: int, test_size: float, seed: int) -> List[Dict[str, np.ndarray]]:
+def _make_folds(
+    n_samples: int,
+    n_folds: int,
+    test_size: float,
+    seed: int,
+    labels: np.ndarray | None = None,
+) -> List[Dict[str, np.ndarray]]:
     idx_local = np.arange(n_samples)
     fold_list: List[Dict[str, np.ndarray]] = []
+    strat_targets = None
+    if labels is not None:
+        # Stratify by multilabel combination (e.g., "101") to reduce fold imbalance.
+        strat_targets = np.array(["".join(row.astype(str).tolist()) for row in labels])
+
     if n_folds >= 2:
+        if strat_targets is not None:
+            try:
+                skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+                for tr_idx, te_idx in skf.split(idx_local, strat_targets):
+                    fold_list.append({"train_idx": tr_idx, "test_idx": te_idx})
+                return fold_list
+            except ValueError:
+                # Fallback when some combinations are too rare for n_splits.
+                pass
+
         kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
         for tr_idx, te_idx in kf.split(idx_local):
             fold_list.append({"train_idx": tr_idx, "test_idx": te_idx})
     else:
-        tr_idx, te_idx = train_test_split(
-            idx_local,
-            test_size=test_size,
-            random_state=seed,
-            shuffle=True,
-        )
+        holdout_stratify = strat_targets if strat_targets is not None else None
+        try:
+            tr_idx, te_idx = train_test_split(
+                idx_local,
+                test_size=test_size,
+                random_state=seed,
+                shuffle=True,
+                stratify=holdout_stratify,
+            )
+        except ValueError:
+            # Fallback when stratification is not feasible due to rare classes.
+            tr_idx, te_idx = train_test_split(
+                idx_local,
+                test_size=test_size,
+                random_state=seed,
+                shuffle=True,
+            )
         fold_list.append({"train_idx": tr_idx, "test_idx": te_idx})
     return fold_list
 
@@ -161,7 +194,7 @@ def main() -> None:
         use_smote=bool(common.use_smote),
     )
 
-    folds = _make_folds(len(texts), args.n_folds, common.test_size, common.seed)
+    folds = _make_folds(len(texts), args.n_folds, common.test_size, common.seed, labels=labels)
 
     print(f"Total samples: {len(texts)}")
     print(f"Validation mode: {'cross-validation' if args.n_folds >= 2 else 'holdout'}")
@@ -169,7 +202,7 @@ def main() -> None:
         print(f"Folds: {args.n_folds}")
     else:
         print(f"Holdout test_size: {common.test_size}")
-    print(f"SMOTE on train split (classical models): {bool(common.use_smote)}")
+    print(f"SMOTE on train split (ML only): {bool(common.use_smote)}")
     if any(m in {"llm_zero_shot", "llm_few_shot"} for m in models_to_run):
         print(f"LLM backend model: {llm_cfg.model_name}")
 
@@ -178,112 +211,117 @@ def main() -> None:
     artifacts_root = os.path.join(common.output_dir, "model_artifacts")
     os.makedirs(artifacts_root, exist_ok=True)
 
-    non_smote_models = {"llm_zero_shot", "llm_few_shot"}
+    smote_allowed_models = {"linear_svm", "naive_bayes", "logistic_regression"}
+    total_runs = len(models_to_run) * len(folds)
+    overall_pbar = tqdm(total=total_runs, desc="Training progress", unit="fold")
 
-    for raw_name in models_to_run:
-        model_name = raw_name
+    try:
+        for raw_name in models_to_run:
+            model_name = raw_name
 
-        for fold_id, fold_data in enumerate(folds, start=1):
-            train_idx = fold_data["train_idx"]
-            test_idx = fold_data["test_idx"]
+            for fold_id, fold_data in enumerate(folds, start=1):
+                overall_pbar.set_postfix(model=raw_name, fold=f"{fold_id}/{len(folds)}")
+                train_idx = fold_data["train_idx"]
+                test_idx = fold_data["test_idx"]
 
-            train_texts = [texts[i] for i in train_idx]
-            test_texts = [texts[i] for i in test_idx]
-            y_train = labels[train_idx]
-            y_test = labels[test_idx]
+                train_texts = [texts[i] for i in train_idx]
+                test_texts = [texts[i] for i in test_idx]
+                y_train = labels[train_idx]
+                y_test = labels[test_idx]
 
-            print("\n" + "=" * 60)
-            print(f"Running: {raw_name} | Fold {fold_id}/{len(folds)}")
-            print("=" * 60)
+                print("\n" + "=" * 60)
+                print(f"Running: {raw_name} | Fold {fold_id}/{len(folds)}")
+                print("=" * 60)
 
-            seed = common.seed + (models_to_run.index(raw_name) + 1) * 1000 + fold_id
-            model_artifact_dir = os.path.join(artifacts_root, model_name, f"fold_{fold_id}")
-            model_temp_dir = os.path.join(common.output_dir, "temp", model_name, f"fold_{fold_id}")
-            os.makedirs(model_artifact_dir, exist_ok=True)
-            os.makedirs(model_temp_dir, exist_ok=True)
+                seed = common.seed + (models_to_run.index(raw_name) + 1) * 1000 + fold_id
+                use_smote_for_model = bool(common.use_smote and model_name in smote_allowed_models)
+                model_artifact_dir = os.path.join(artifacts_root, model_name, f"fold_{fold_id}")
+                model_temp_dir = os.path.join(common.output_dir, "temp", model_name, f"fold_{fold_id}")
+                os.makedirs(model_artifact_dir, exist_ok=True)
+                os.makedirs(model_temp_dir, exist_ok=True)
 
-            model_start = time.time()
+                model_start = time.time()
 
-            if model_name == "bert":
-                metrics, train_t, infer_t = run_transformer(
+                if model_name == "bert":
+                    metrics, train_t, infer_t = run_transformer(
                     train_texts=train_texts,
                     train_labels=y_train,
                     test_texts=test_texts,
                     test_labels=y_test,
                     cfg=bert_cfg,
                     seed=seed,
-                    use_smote=common.use_smote,
+                    use_smote=use_smote_for_model,
                     output_dir=model_temp_dir,
                     save_dir=model_artifact_dir,
-                )
-            elif model_name == "roberta":
-                metrics, train_t, infer_t = run_transformer(
+                    )
+                elif model_name == "roberta":
+                    metrics, train_t, infer_t = run_transformer(
                     train_texts=train_texts,
                     train_labels=y_train,
                     test_texts=test_texts,
                     test_labels=y_test,
                     cfg=roberta_cfg,
                     seed=seed,
-                    use_smote=common.use_smote,
+                    use_smote=use_smote_for_model,
                     output_dir=model_temp_dir,
                     save_dir=model_artifact_dir,
-                )
-            elif model_name == "linear_svm":
-                metrics, train_t, infer_t = run_linear_svm(
+                    )
+                elif model_name == "linear_svm":
+                    metrics, train_t, infer_t = run_linear_svm(
                     train_texts=train_texts,
                     train_labels=y_train,
                     test_texts=test_texts,
                     test_labels=y_test,
-                    use_smote=common.use_smote,
+                    use_smote=use_smote_for_model,
                     seed=seed,
                     save_dir=model_artifact_dir,
-                )
-            elif model_name == "naive_bayes":
-                metrics, train_t, infer_t = run_naive_bayes(
+                    )
+                elif model_name == "naive_bayes":
+                    metrics, train_t, infer_t = run_naive_bayes(
                     train_texts=train_texts,
                     train_labels=y_train,
                     test_texts=test_texts,
                     test_labels=y_test,
-                    use_smote=common.use_smote,
+                    use_smote=use_smote_for_model,
                     seed=seed,
                     save_dir=model_artifact_dir,
-                )
-            elif model_name == "logistic_regression":
-                metrics, train_t, infer_t = run_logistic_regression(
+                    )
+                elif model_name == "logistic_regression":
+                    metrics, train_t, infer_t = run_logistic_regression(
                     train_texts=train_texts,
                     train_labels=y_train,
                     test_texts=test_texts,
                     test_labels=y_test,
-                    use_smote=common.use_smote,
+                    use_smote=use_smote_for_model,
                     seed=seed,
                     save_dir=model_artifact_dir,
-                )
-            elif model_name == "lstm":
-                metrics, train_t, infer_t = run_lstm_like(
+                    )
+                elif model_name == "lstm":
+                    metrics, train_t, infer_t = run_lstm_like(
                     train_texts=train_texts,
                     train_labels=y_train,
                     test_texts=test_texts,
                     test_labels=y_test,
                     cfg=rnn_cfg,
                     bidirectional=False,
-                    use_smote=common.use_smote,
+                    use_smote=use_smote_for_model,
                     seed=seed,
                     save_dir=model_artifact_dir,
-                )
-            elif model_name == "bilstm":
-                metrics, train_t, infer_t = run_lstm_like(
+                    )
+                elif model_name == "bilstm":
+                    metrics, train_t, infer_t = run_lstm_like(
                     train_texts=train_texts,
                     train_labels=y_train,
                     test_texts=test_texts,
                     test_labels=y_test,
                     cfg=rnn_cfg,
                     bidirectional=True,
-                    use_smote=common.use_smote,
+                    use_smote=use_smote_for_model,
                     seed=seed,
                     save_dir=model_artifact_dir,
-                )
-            elif model_name in {"llm_zero_shot", "llm_few_shot"}:
-                metrics, train_t, infer_t = run_llm_zero_few_shot(
+                    )
+                elif model_name in {"llm_zero_shot", "llm_few_shot"}:
+                    metrics, train_t, infer_t = run_llm_zero_few_shot(
                     train_texts=train_texts,
                     train_labels=y_train,
                     test_texts=test_texts,
@@ -292,43 +330,46 @@ def main() -> None:
                     mode="few_shot" if model_name == "llm_few_shot" else "zero_shot",
                     seed=seed,
                     save_dir=model_artifact_dir,
-                )
-            else:
-                raise ValueError(f"Unsupported model in current pipeline scope: {raw_name}")
+                    )
+                else:
+                    raise ValueError(f"Unsupported model in current pipeline scope: {raw_name}")
 
-            model_end = time.time()
+                model_end = time.time()
 
-            row = {
-                "model": raw_name,
-                "fold": int(fold_id),
-                "train_time_sec": float(train_t),
-                "infer_time_sec": float(infer_t),
-                "smote_train_only": int(common.use_smote and model_name not in non_smote_models),
-                "artifact_dir": model_artifact_dir,
-                "temp_dir": model_temp_dir,
-            }
-            row.update(metrics)
-            rows.append(row)
-
-            process_records.append(
-                {
-                    "fold": int(fold_id),
+                row = {
                     "model": raw_name,
-                    "normalized_model": model_name,
-                    "seed": int(seed),
-                    "artifact_dir": model_artifact_dir,
-                    "temp_dir": model_temp_dir,
-                    "analysis_dir": analysis_dir,
-                    "started_at_unix": float(model_start),
-                    "ended_at_unix": float(model_end),
+                    "fold": int(fold_id),
                     "train_time_sec": float(train_t),
                     "infer_time_sec": float(infer_t),
-                    "llm_model_name": llm_cfg.model_name if model_name in {"llm_zero_shot", "llm_few_shot"} else "",
-                    "metrics": {k: float(v) for k, v in metrics.items()},
+                    "smote_train_only": int(use_smote_for_model),
+                    "artifact_dir": model_artifact_dir,
+                    "temp_dir": model_temp_dir,
                 }
-            )
+                row.update(metrics)
+                rows.append(row)
 
-            print(f"subset_accuracy={metrics['subset_accuracy']:.4f}, f1_macro={metrics['f1_macro']:.4f}")
+                process_records.append(
+                    {
+                        "fold": int(fold_id),
+                        "model": raw_name,
+                        "normalized_model": model_name,
+                        "seed": int(seed),
+                        "artifact_dir": model_artifact_dir,
+                        "temp_dir": model_temp_dir,
+                        "analysis_dir": analysis_dir,
+                        "started_at_unix": float(model_start),
+                        "ended_at_unix": float(model_end),
+                        "train_time_sec": float(train_t),
+                        "infer_time_sec": float(infer_t),
+                        "llm_model_name": llm_cfg.model_name if model_name in {"llm_zero_shot", "llm_few_shot"} else "",
+                        "metrics": {k: float(v) for k, v in metrics.items()},
+                    }
+                )
+
+                print(f"subset_accuracy={metrics['subset_accuracy']:.4f}, f1_macro={metrics['f1_macro']:.4f}")
+                overall_pbar.update(1)
+    finally:
+        overall_pbar.close()
 
     export_results(rows, common.output_dir)
 

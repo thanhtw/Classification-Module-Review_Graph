@@ -10,10 +10,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
+from tqdm.auto import tqdm
 
 from src.training.config import RNNConfig
 from src.data.preprocessor import VocabBuilder, texts_to_sequences, tokenize_text
-from src.utils.metrics import compute_metrics
+from src.utils.metrics import apply_per_label_thresholds, compute_metrics, tune_per_label_thresholds
 from src.utils.smote import apply_smote_multilabel
 
 
@@ -157,7 +158,8 @@ def _train_eval(
         'val_f1_micro': []
     }
 
-    for epoch in range(epochs):
+    epoch_bar = tqdm(range(epochs), desc="NN Epoch Progress", unit="epoch", leave=False)
+    for epoch in epoch_bar:
         running_loss = 0.0
         train_logits = []
         train_labels_collected = []
@@ -185,8 +187,8 @@ def _train_eval(
             train_labels_all = np.vstack(train_labels_collected)
             train_preds = (1 / (1 + np.exp(-train_logits_all)) > 0.5).astype(int)
             train_metrics = compute_metrics(train_labels_all, train_preds)
-            history['train_f1_macro'].append(train_metrics.get('f1_macro_mean', 0))
-            history['train_f1_micro'].append(train_metrics.get('f1_micro_mean', 0))
+            history['train_f1_macro'].append(train_metrics.get('f1_macro', 0.0))
+            history['train_f1_micro'].append(train_metrics.get('f1_micro', 0.0))
 
         # Keep training policy consistent with biLstmGlove.py.
         if len(train_loader) > 0:
@@ -211,13 +213,23 @@ def _train_eval(
         history['val_loss'].append(val_loss)
         
         # Compute validation metrics
+        val_f1_macro = 0.0
         if val_logits:
             val_logits_all = np.vstack(val_logits)
             val_labels_all = np.vstack(val_labels_collected)
             val_preds = (1 / (1 + np.exp(-val_logits_all)) > 0.5).astype(int)
             val_metrics = compute_metrics(val_labels_all, val_preds)
-            history['val_f1_macro'].append(val_metrics.get('f1_macro_mean', 0))
-            history['val_f1_micro'].append(val_metrics.get('f1_micro_mean', 0))
+            val_f1_macro = val_metrics.get('f1_macro', 0.0)
+            history['val_f1_macro'].append(val_f1_macro)
+            history['val_f1_micro'].append(val_metrics.get('f1_micro', 0.0))
+
+        epoch_pct = 100.0 * (epoch + 1) / max(1, epochs)
+        epoch_bar.set_postfix(
+            progress=f"{epoch_pct:.1f}%",
+            train_loss=f"{avg_train_loss:.4f}",
+            val_loss=f"{val_loss:.4f}",
+            val_f1=f"{val_f1_macro:.4f}",
+        )
         
         model.train()
 
@@ -230,8 +242,31 @@ def _train_eval(
             if no_improve >= early_stopping_patience:
                 break
 
+    epoch_bar.close()
+
     model.load_state_dict(best_state)
     train_time = time.perf_counter() - train_start
+
+    # Tune one threshold per label on validation split using the best checkpoint.
+    model.eval()
+    val_logits = []
+    val_labels_collected = []
+    with torch.no_grad():
+        for bx, by in val_loader:
+            bx, by = bx.to(device), by.to(device)
+            logits = model(bx)
+            val_logits.append(logits.cpu().numpy())
+            val_labels_collected.append(by.cpu().numpy())
+
+    if val_logits:
+        val_logits_all = np.vstack(val_logits)
+        val_labels_all = np.vstack(val_labels_collected).astype(int)
+        val_probs = 1 / (1 + np.exp(-val_logits_all))
+        tuned_thresholds = tune_per_label_thresholds(val_labels_all, val_probs)
+    else:
+        tuned_thresholds = np.full(y_test.shape[1], 0.5, dtype=float)
+
+    history['tuned_thresholds'] = tuned_thresholds.tolist()
 
     model.eval()
     infer_start = time.perf_counter()
@@ -243,7 +278,8 @@ def _train_eval(
     infer_time = time.perf_counter() - infer_start
 
     logits = np.vstack(all_logits)
-    preds = (1 / (1 + np.exp(-logits)) > 0.5).astype(int)
+    probs = 1 / (1 + np.exp(-logits))
+    preds = apply_per_label_thresholds(probs, tuned_thresholds)
     
     # Save history if save_dir provided
     if save_dir:

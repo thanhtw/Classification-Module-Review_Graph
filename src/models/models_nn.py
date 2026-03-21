@@ -142,7 +142,7 @@ def _train_eval(
     scheduler_factor: float = 0.5,
     early_stopping_patience: int = 3,
     save_dir: str = "",
-) -> Tuple[Dict[str, float], float, float, nn.Module]:
+) -> Tuple[Dict[str, float], float, float, nn.Module, np.ndarray, np.ndarray]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
 
@@ -286,7 +286,7 @@ def _train_eval(
         with open(history_file, 'w') as f:
             json.dump(history, f, indent=2)
     
-    return compute_metrics(y_test, preds), train_time, infer_time, model
+    return compute_metrics(y_test, preds), train_time, infer_time, model, preds, y_test
 
 
 def _prepare_seq_data(train_texts: Sequence[str], test_texts: Sequence[str], max_len: int):
@@ -368,7 +368,7 @@ def run_lstm_like(
         embeddings=embeddings,
         embedding_trainable=cfg.glove_trainable,
     )
-    metrics, train_time, infer_time, model = _train_eval(
+    metrics, train_time, infer_time, model, preds, y_test_returned = _train_eval(
         model,
         x_train,
         y_train,
@@ -387,6 +387,10 @@ def run_lstm_like(
 
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)
+        # Save predictions and labels for confusion matrix calculation
+        np.save(os.path.join(save_dir, "predictions.npy"), preds)
+        np.save(os.path.join(save_dir, "labels.npy"), y_test_returned)
+        
         torch.save(
             {
                 "state_dict": model.state_dict(),
@@ -450,7 +454,7 @@ def run_lstm_like_from_sequences(
         embeddings=embeddings,
         embedding_trainable=cfg.glove_trainable,
     )
-    metrics, train_time, infer_time, model = _train_eval(
+    metrics, train_time, infer_time, model, preds, y_test_returned = _train_eval(
         model,
         x_train,
         train_labels,
@@ -468,6 +472,10 @@ def run_lstm_like_from_sequences(
 
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)
+        # Save predictions and labels for confusion matrix calculation
+        np.save(os.path.join(save_dir, "predictions.npy"), preds)
+        np.save(os.path.join(save_dir, "labels.npy"), y_test_returned)
+        
         torch.save(
             {
                 "state_dict": model.state_dict(),
@@ -542,7 +550,7 @@ def run_cnn_attention(
         embeddings=embeddings,
         embedding_trainable=cfg.glove_trainable,
     )
-    metrics, train_time, infer_time, model = _train_eval(
+    metrics, train_time, infer_time, model, preds, y_test_returned = _train_eval(
         model,
         x_train,
         y_train,
@@ -561,6 +569,10 @@ def run_cnn_attention(
 
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)
+        # Save predictions and labels for confusion matrix calculation
+        np.save(os.path.join(save_dir, "predictions.npy"), preds)
+        np.save(os.path.join(save_dir, "labels.npy"), y_test_returned)
+        
         torch.save(
             {
                 "state_dict": model.state_dict(),

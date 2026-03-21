@@ -147,6 +147,11 @@ def run_llm_zero_few_shot(
 
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)
+        
+        # Save predictions and labels for confusion matrix calculation
+        np.save(os.path.join(save_dir, "predictions.npy"), y_pred)
+        np.save(os.path.join(save_dir, "labels.npy"), test_labels)
+        
         with open(os.path.join(save_dir, "metadata.json"), "w", encoding="utf-8") as f:
             json.dump(
                 {

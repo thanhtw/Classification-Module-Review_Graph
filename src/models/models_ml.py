@@ -158,6 +158,10 @@ def run_linear_svm(
                 f,
             )
         
+        # Save predictions and labels for confusion matrix calculation
+        np.save(os.path.join(save_dir, "predictions.npy"), preds)
+        np.save(os.path.join(save_dir, "labels.npy"), test_labels)
+        
         # Save metadata
         with open(os.path.join(save_dir, "metadata.json"), "w", encoding="utf-8") as f:
             json.dump(
@@ -253,6 +257,10 @@ def run_naive_bayes(
                 },
                 f,
             )
+        
+        # Save predictions and labels for confusion matrix calculation
+        np.save(os.path.join(save_dir, "predictions.npy"), preds)
+        np.save(os.path.join(save_dir, "labels.npy"), test_labels)
         
         # Save metadata
         with open(os.path.join(save_dir, "metadata.json"), "w", encoding="utf-8") as f:
@@ -357,6 +365,10 @@ def run_logistic_regression(
                 },
                 f,
             )
+        
+        # Save predictions and labels for confusion matrix calculation
+        np.save(os.path.join(save_dir, "predictions.npy"), preds)
+        np.save(os.path.join(save_dir, "labels.npy"), test_labels)
         
         # Save metadata
         with open(os.path.join(save_dir, "metadata.json"), "w", encoding="utf-8") as f:

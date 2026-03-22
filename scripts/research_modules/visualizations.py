@@ -394,57 +394,73 @@ def generate_per_label_confusion_matrices(output_dir="results/research_compariso
 
 
 def generate_training_curves(output_dir="results/research_comparison"):
-    """Generate training curves (F1-Macro/F1-Micro & Loss across epochs) if history data available"""
+    """Generate training curves for selected best fold of each model when history exists."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    print("\n📈 Searching for training history data...")
-    
-    # Try to find training history files
-    history_files = list(Path("results").glob("**/training_history*.json"))
-    
-    if not history_files:
-        print("⚠ No training history files found - skipping training curves")
+    print("\n📈 Searching for best-fold training history data...")
+
+    model_artifacts_dir = Path("results/modular_multimodel/model_artifacts")
+    best_fold_map = _load_best_fold_map()
+    history_entries = []
+
+    if model_artifacts_dir.exists():
+        model_dirs = sorted([d for d in model_artifacts_dir.iterdir() if d.is_dir()])
+        for model_dir in model_dirs:
+            fold_dir = _get_model_fold_dir(model_dir, best_fold_map)
+            if fold_dir is None:
+                continue
+            history_path = fold_dir / "training_history.json"
+            if history_path.exists():
+                history_entries.append((model_dir.name, fold_dir.name, history_path))
+
+    if not history_entries:
+        print("⚠ No best-fold training history files found - skipping training curves")
         return None
-    
-    # Load and visualize first available history
+
     try:
-        with open(history_files[0], 'r') as f:
-            history = json.load(f)
-        
-        # Create figure with F1-Macro/F1-Micro and loss
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-        fig.suptitle('Training Curves: Deep Learning Model', fontsize=14, fontweight='bold')
-        
-        epochs = list(range(1, len(history.get('train_loss', [])) + 1))
-        
-        # F1-Macro and F1-Micro plot
-        ax1.plot(epochs, history.get('train_f1_macro', []), 'o-', linewidth=2, markersize=4, label='Training F1-Macro', color='#3498DB')
-        ax1.plot(epochs, history.get('val_f1_macro', []), 's-', linewidth=2, markersize=4, label='Validation F1-Macro', color='#E74C3C')
-        ax1.plot(epochs, history.get('train_f1_micro', []), 'o--', linewidth=2, markersize=4, label='Training F1-Micro', color='#2ECC71', alpha=0.7)
-        ax1.plot(epochs, history.get('val_f1_micro', []), 's--', linewidth=2, markersize=4, label='Validation F1-Micro', color='#F39C12', alpha=0.7)
-        ax1.set_xlabel('Epochs', fontsize=11, fontweight='bold')
-        ax1.set_ylabel('F1 Score', fontsize=11, fontweight='bold')
-        ax1.set_title('(a) F1-Macro & F1-Micro', fontsize=12, fontweight='bold')
-        ax1.legend(fontsize=9)
-        ax1.grid(True, alpha=0.3)
-        ax1.set_ylim(0, 1.0)
-        
-        # Loss plot
-        ax2.plot(epochs, history.get('train_loss', []), 'o-', linewidth=2, markersize=4, label='Training loss', color='#3498DB')
-        ax2.plot(epochs, history.get('val_loss', []), 's-', linewidth=2, markersize=4, label='Validation loss', color='#E74C3C')
-        ax2.set_xlabel('Epochs', fontsize=11, fontweight='bold')
-        ax2.set_ylabel('Loss', fontsize=11, fontweight='bold')
-        ax2.set_title('(b) Loss', fontsize=12, fontweight='bold')
-        ax2.legend(fontsize=10)
-        ax2.grid(True, alpha=0.3)
-        
+        n_models = len(history_entries)
+        fig, axes = plt.subplots(n_models, 2, figsize=(14, max(5, 4.5 * n_models)))
+        if n_models == 1:
+            axes = np.array([axes])
+
+        fig.suptitle('Training Curves: Selected Best Fold per Model', fontsize=14, fontweight='bold')
+
+        for row_idx, (model_name, fold_name, history_path) in enumerate(history_entries):
+            with open(history_path, 'r', encoding='utf-8') as f:
+                history = json.load(f)
+
+            ax1 = axes[row_idx, 0]
+            ax2 = axes[row_idx, 1]
+            epochs = list(range(1, len(history.get('train_loss', [])) + 1))
+            if not epochs:
+                continue
+
+            ax1.plot(epochs, history.get('train_f1_macro', []), 'o-', linewidth=2, markersize=3, label='Train F1-Macro', color='#3498DB')
+            ax1.plot(epochs, history.get('val_f1_macro', []), 's-', linewidth=2, markersize=3, label='Val F1-Macro', color='#E74C3C')
+            ax1.plot(epochs, history.get('train_f1_micro', []), 'o--', linewidth=1.8, markersize=3, label='Train F1-Micro', color='#2ECC71', alpha=0.8)
+            ax1.plot(epochs, history.get('val_f1_micro', []), 's--', linewidth=1.8, markersize=3, label='Val F1-Micro', color='#F39C12', alpha=0.8)
+            ax1.set_xlabel('Epochs', fontsize=10, fontweight='bold')
+            ax1.set_ylabel('F1 Score', fontsize=10, fontweight='bold')
+            ax1.set_title(f'{model_name} {fold_name}: F1', fontsize=11, fontweight='bold')
+            ax1.grid(True, alpha=0.3)
+            ax1.set_ylim(0, 1.0)
+            ax1.legend(fontsize=8)
+
+            ax2.plot(epochs, history.get('train_loss', []), 'o-', linewidth=2, markersize=3, label='Train loss', color='#3498DB')
+            ax2.plot(epochs, history.get('val_loss', []), 's-', linewidth=2, markersize=3, label='Val loss', color='#E74C3C')
+            ax2.set_xlabel('Epochs', fontsize=10, fontweight='bold')
+            ax2.set_ylabel('Loss', fontsize=10, fontweight='bold')
+            ax2.set_title(f'{model_name} {fold_name}: Loss', fontsize=11, fontweight='bold')
+            ax2.grid(True, alpha=0.3)
+            ax2.legend(fontsize=8)
+
         plt.tight_layout()
-        curves_path = output_dir / "training_curves.png"
+        curves_path = output_dir / "training_curves_best_folds.png"
         plt.savefig(curves_path, dpi=300, bbox_inches='tight')
-        print(f"✓ Training curves saved to: {curves_path}")
+        print(f"✓ Best-fold training curves saved to: {curves_path}")
         plt.close()
-        
+
         return curves_path
     except Exception as e:
         print(f"⚠ Could not generate training curves: {e}")

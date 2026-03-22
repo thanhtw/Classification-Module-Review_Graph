@@ -13,11 +13,12 @@ import argparse
 import json
 from pathlib import Path
 from datetime import datetime
-from typing import Dict
+from typing import Dict, List
 from tqdm.auto import tqdm
 
 import pandas as pd
 import numpy as np
+from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 
 project_root = Path(__file__).parent.parent
 scripts_dir = Path(__file__).parent
@@ -107,24 +108,123 @@ def _aggregate_threshold_stats(model_df: pd.DataFrame) -> Dict[str, float]:
     return out
 
 
+def _load_thresholds_for_best_fold(artifact_dir: str) -> Dict[str, float]:
+    """Load per-label thresholds for one selected best fold."""
+    th = _load_thresholds_from_artifact(artifact_dir)
+    if th is None:
+        return {}
+    out: Dict[str, float] = {}
+    for i, label in enumerate(LABEL_COLUMNS):
+        out[f"threshold_{label}_mean"] = float(th[i])
+        out[f"threshold_{label}_std"] = 0.0
+    return out
+
+
+def _make_folds_for_export(
+    n_samples: int,
+    n_folds: int,
+    test_size: float,
+    seed: int,
+    labels: np.ndarray | None = None,
+) -> List[Dict[str, np.ndarray]]:
+    """Replicate train.py fold logic so best-fold train/test data can be exported."""
+    idx_local = np.arange(n_samples)
+    fold_list: List[Dict[str, np.ndarray]] = []
+    strat_targets = None
+    if labels is not None:
+        strat_targets = np.array(["".join(row.astype(str).tolist()) for row in labels])
+
+    if n_folds >= 2:
+        if strat_targets is not None:
+            try:
+                skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+                for tr_idx, te_idx in skf.split(idx_local, strat_targets):
+                    fold_list.append({"train_idx": tr_idx, "test_idx": te_idx})
+                return fold_list
+            except ValueError:
+                pass
+
+        kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
+        for tr_idx, te_idx in kf.split(idx_local):
+            fold_list.append({"train_idx": tr_idx, "test_idx": te_idx})
+    else:
+        holdout_stratify = strat_targets if strat_targets is not None else None
+        try:
+            tr_idx, te_idx = train_test_split(
+                idx_local,
+                test_size=test_size,
+                random_state=seed,
+                shuffle=True,
+                stratify=holdout_stratify,
+            )
+        except ValueError:
+            tr_idx, te_idx = train_test_split(
+                idx_local,
+                test_size=test_size,
+                random_state=seed,
+                shuffle=True,
+            )
+        fold_list.append({"train_idx": tr_idx, "test_idx": te_idx})
+    return fold_list
+
+
+def _export_best_fold_split_files(
+    data_df: pd.DataFrame,
+    folds: List[Dict[str, np.ndarray]],
+    model_key: str,
+    best_fold: int,
+    output_dir: Path,
+) -> tuple[str, str, int, int]:
+    """Export train/test rows for selected best fold to support feature analysis."""
+    fold_idx = int(best_fold) - 1
+    if fold_idx < 0 or fold_idx >= len(folds):
+        raise ValueError(f"Best fold {best_fold} out of range for {model_key}")
+
+    train_idx = folds[fold_idx]["train_idx"]
+    test_idx = folds[fold_idx]["test_idx"]
+
+    train_df = data_df.iloc[train_idx].copy()
+    test_df = data_df.iloc[test_idx].copy()
+    train_df.insert(0, "source_index", train_df.index.astype(int))
+    test_df.insert(0, "source_index", test_df.index.astype(int))
+
+    model_out_dir = output_dir / f"{model_key}_fold_{best_fold}"
+    model_out_dir.mkdir(parents=True, exist_ok=True)
+    train_path = model_out_dir / "train_split.csv"
+    test_path = model_out_dir / "test_split.csv"
+    train_df.to_csv(train_path, index=False)
+    test_df.to_csv(test_path, index=False)
+
+    return str(train_path), str(test_path), int(len(train_df)), int(len(test_df))
+
+
+def _select_best_fold_row(model_df: pd.DataFrame) -> pd.Series:
+    """Select best fold by evaluation priority: f1_macro > f1_micro > subset_accuracy."""
+    return model_df.sort_values(
+        ["f1_macro", "f1_micro", "subset_accuracy"],
+        ascending=[False, False, False],
+    ).iloc[0]
+
+
 def _export_txt_report(sorted_results: list[dict], output_path: Path) -> None:
-    """Export a plain-text comparison report with accuracy and thresholds."""
+    """Export a plain-text best-fold comparison report with accuracy and thresholds."""
     lines = []
-    lines.append("MODEL COMPARISON REPORT")
+    lines.append("BEST FOLD MODEL COMPARISON REPORT")
     lines.append("=" * 120)
     lines.append(
-        f"{'Rank':<5} | {'Model':<30} | {'Acc-Micro':<10} | {'Acc-Macro':<10} | {'F1-Macro':<10} | {'F1-Micro':<10}"
+        f"{'Rank':<5} | {'Model':<30} | {'Fold':<6} | {'Acc-Micro':<10} | {'Acc-Macro':<10} | {'F1-Macro':<10} | {'F1-Micro':<10}"
     )
     lines.append("-" * 120)
 
     for rank, result in enumerate(sorted_results, 1):
         model = result.get("model", "")[:30]
+        fold = int(result.get("selected_fold", 0))
         acc_micro = result.get("accuracy_micro_mean", 0.0)
         acc_macro = result.get("accuracy_macro_mean", 0.0)
         f1_macro = result.get("f1_macro_mean", 0.0)
         f1_micro = result.get("f1_micro_mean", 0.0)
         lines.append(
-            f"{rank:<5} | {model:<30} | {acc_micro:<10.4f} | {acc_macro:<10.4f} | {f1_macro:<10.4f} | {f1_micro:<10.4f}"
+            f"{rank:<5} | {model:<30} | {fold:<6} | {acc_micro:<10.4f} | {acc_macro:<10.4f} | {f1_macro:<10.4f} | {f1_micro:<10.4f}"
         )
 
     lines.append("\nPER-LABEL THRESHOLDS (mean ± std)")
@@ -186,6 +286,16 @@ def run_research_comparison(n_folds=10, seed=42):
     
     comparison_results = []
     failed_models = []
+    feature_split_records: list[dict] = []
+    full_df = load_and_clean_data("data/cleaned_3label_data.csv")
+    all_labels = full_df[LABEL_COLUMNS].values.astype(int)
+    folds_for_export = _make_folds_for_export(
+        n_samples=len(full_df),
+        n_folds=n_folds,
+        test_size=0.2,
+        seed=seed,
+        labels=all_labels,
+    )
     live_progress_models = {
         "linear_svm",
         "logistic_regression",
@@ -252,35 +362,62 @@ def run_research_comparison(n_folds=10, seed=42):
                     model_df = df[df[model_col] == model_key]
                     
                     if len(model_df) > 0:
-                        # Calculate average metrics across folds
-                        avg_metrics = {
+                        best_row = _select_best_fold_row(model_df)
+                        best_fold = int(best_row.get("fold", best_row.get("Fold", 1)))
+
+                        best_metrics = {
                             'model': model_display_name,
                             'model_key': model_key,
                             'num_folds': len(model_df),
+                            'selected_fold': best_fold,
+                            'selection_rule': 'f1_macro > f1_micro > subset_accuracy',
                         }
-                        
-                        # Extract numeric columns
+
                         numeric_cols = model_df.select_dtypes(include=['float64', 'int64']).columns
                         numeric_cols = [col for col in numeric_cols if col not in [model_col, 'fold', 'Fold']]
-                        
                         for col in numeric_cols:
-                            values = model_df[col].dropna().values
-                            if len(values) > 0:
-                                mean_val = float(values.mean())
-                                std_val = float(values.std()) if len(values) > 1 else 0.0
-                                avg_metrics[f'{col}_mean'] = mean_val
-                                avg_metrics[f'{col}_std'] = std_val
+                            if col in best_row and pd.notna(best_row[col]):
+                                best_val = float(best_row[col])
+                                best_metrics[f'{col}_mean'] = best_val
+                                best_metrics[f'{col}_std'] = 0.0
 
-                        # Aggregate per-label thresholds from fold artifacts.
-                        avg_metrics.update(_aggregate_threshold_stats(model_df))
-                        
-                        comparison_results.append(avg_metrics)
-                        
-                        f1_macro = avg_metrics.get('f1_macro_mean', avg_metrics.get('f1-macro_mean', 0))
-                        f1_std = avg_metrics.get('f1_macro_std', avg_metrics.get('f1-macro_std', 0))
+                        artifact_dir = str(best_row.get("artifact_dir", ""))
+                        if artifact_dir:
+                            best_metrics["artifact_dir"] = artifact_dir
+                            best_metrics.update(_load_thresholds_for_best_fold(artifact_dir))
+
+                        feature_dir = project_root / "results" / "research_comparison" / "best_fold_feature_analysis"
+                        train_split_path, test_split_path, train_size, test_size = _export_best_fold_split_files(
+                            data_df=full_df,
+                            folds=folds_for_export,
+                            model_key=model_key,
+                            best_fold=best_fold,
+                            output_dir=feature_dir,
+                        )
+                        best_metrics["best_fold_train_split"] = train_split_path
+                        best_metrics["best_fold_test_split"] = test_split_path
+                        best_metrics["best_fold_train_size"] = train_size
+                        best_metrics["best_fold_test_size"] = test_size
+
+                        feature_split_records.append(
+                            {
+                                "model": model_display_name,
+                                "model_key": model_key,
+                                "best_fold": best_fold,
+                                "train_size": train_size,
+                                "test_size": test_size,
+                                "train_split_csv": train_split_path,
+                                "test_split_csv": test_split_path,
+                            }
+                        )
+
+                        comparison_results.append(best_metrics)
+
+                        f1_macro = best_metrics.get('f1_macro_mean', best_metrics.get('f1-macro_mean', 0))
                         print(f"\n✓ {model_display_name} Complete")
                         print(f"  - Folds: {len(model_df)}")
-                        print(f"  - F1-macro: {f1_macro:.4f} (±{f1_std:.4f})")
+                        print(f"  - Selected best fold: {best_fold}")
+                        print(f"  - F1-macro (best fold): {f1_macro:.4f}")
                     else:
                         print(f"\n✗ No results found for {model_display_name} in CSV")
                         failed_models.append(model_display_name)
@@ -317,10 +454,33 @@ def run_research_comparison(n_folds=10, seed=42):
         csv_path = results_dir / "all_models_comparison.csv"
         comparison_df.to_csv(csv_path, index=False)
         print(f"✓ Results saved to: {csv_path}\n")
+        best_csv_path = results_dir / "best_fold_model_comparison.csv"
+        comparison_df.to_csv(best_csv_path, index=False)
+        print(f"✓ Best-fold comparison saved to: {best_csv_path}\n")
+
+        if feature_split_records:
+            feature_summary_df = pd.DataFrame(feature_split_records)
+            feature_summary_csv = results_dir / "best_fold_feature_analysis" / "best_fold_split_summary.csv"
+            feature_summary_df.to_csv(feature_summary_csv, index=False)
+            feature_summary_txt = results_dir / "best_fold_feature_analysis" / "best_fold_split_summary.txt"
+            summary_lines = [
+                "BEST FOLD TRAIN/TEST SPLIT FILES",
+                "=" * 120,
+                f"{'Model':<30} | {'Fold':<6} | {'Train':<8} | {'Test':<8} | {'Train CSV':<30} | {'Test CSV':<30}",
+                "-" * 120,
+            ]
+            for r in feature_split_records:
+                summary_lines.append(
+                    f"{r['model'][:30]:<30} | {r['best_fold']:<6} | {r['train_size']:<8} | {r['test_size']:<8} | "
+                    f"{r['train_split_csv'][:30]:<30} | {r['test_split_csv'][:30]:<30}"
+                )
+            feature_summary_txt.write_text("\n".join(summary_lines), encoding="utf-8")
+            print(f"✓ Feature split summary CSV: {feature_summary_csv}")
+            print(f"✓ Feature split summary TXT: {feature_summary_txt}\n")
         
         # Display comprehensive comparison table
         print("=" * 180)
-        print(f"{'Rank':<5} | {'Model':<30} | {'Acc-Micro':<12} | {'Acc-Macro':<12} | {'F1-Macro':<15} | {'F1-Micro':<15} | {'Prec-Macro':<15} | {'Recall-Macro':<15}")
+        print(f"{'Rank':<5} | {'Model':<30} | {'Fold':<6} | {'Acc-Micro':<12} | {'Acc-Macro':<12} | {'F1-Macro':<15} | {'F1-Micro':<15} | {'Prec-Macro':<15} | {'Recall-Macro':<15}")
         print("=" * 180)
         
         # Sort by F1-macro descending
@@ -328,13 +488,14 @@ def run_research_comparison(n_folds=10, seed=42):
         
         for rank, result in enumerate(sorted_results, 1):
             model_name = result['model'][:28]
+            fold = int(result.get('selected_fold', 0))
             acc_micro = f"{result.get('accuracy_micro_mean', 0):.4f}±{result.get('accuracy_micro_std', 0):.4f}"
             acc_macro = f"{result.get('accuracy_macro_mean', 0):.4f}±{result.get('accuracy_macro_std', 0):.4f}"
             f1_macro = f"{result.get('f1_macro_mean', 0):.4f}±{result.get('f1_macro_std', 0):.4f}"
             f1_micro = f"{result.get('f1_micro_mean', 0):.4f}±{result.get('f1_micro_std', 0):.4f}"
             prec_macro = f"{result.get('precision_macro_mean', 0):.4f}±{result.get('precision_macro_std', 0):.4f}"
             rec_macro = f"{result.get('recall_macro_mean', 0):.4f}±{result.get('recall_macro_std', 0):.4f}"
-            print(f"{rank:<5} | {model_name:<30} | {acc_micro:<12} | {acc_macro:<12} | {f1_macro:<15} | {f1_micro:<15} | {prec_macro:<15} | {rec_macro:<15}")
+            print(f"{rank:<5} | {model_name:<30} | {fold:<6} | {acc_micro:<12} | {acc_macro:<12} | {f1_macro:<15} | {f1_micro:<15} | {prec_macro:<15} | {rec_macro:<15}")
         
         print("=" * 180)
 

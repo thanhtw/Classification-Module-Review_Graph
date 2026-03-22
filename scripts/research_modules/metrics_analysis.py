@@ -94,7 +94,7 @@ def extract_per_label_metrics_from_results(model_key, model_results_df):
 
 
 def generate_per_label_metrics_report(comparison_results, output_dir="results/research_comparison"):
-    """Generate comprehensive per-label metrics report for research paper"""
+    """Generate per-label metrics report using selected best fold per model."""
     
     print("\n" + "=" * 80)
     print("PER-LABEL METRICS ANALYSIS")
@@ -112,7 +112,7 @@ def generate_per_label_metrics_report(comparison_results, output_dir="results/re
             LABEL_COLUMNS[2]: "Constructive - Is the text constructive/helpful?",
         }
         if len(LABEL_COLUMNS) >= 3 else {},
-        "note": "Per-label metrics calculated across all folds (approximated from macro metrics)",
+        "note": "Per-label metrics are computed from predictions/labels of selected best fold when artifacts exist.",
         "models": {}
     }
     
@@ -121,28 +121,44 @@ def generate_per_label_metrics_report(comparison_results, output_dir="results/re
         model_name = result['model']
         model_metrics = {}
         
-        for idx, label in enumerate(LABEL_COLUMNS):
-            # Approximate per-label metrics from macro metrics divided by num labels
-            # This is a reasonable approximation when per-label data not available separately
-            num_labels = len(LABEL_COLUMNS)
-            
-            prec = result.get('precision_macro_mean', 0) / num_labels
-            rec = result.get('recall_macro_mean', 0) / num_labels
-            f1 = result.get('f1_macro_mean', 0) / num_labels
-            
-            prec_std = result.get('precision_macro_std', 0) / num_labels if result.get('precision_macro_std', 0) > 0 else 0
-            rec_std = result.get('recall_macro_std', 0) / num_labels if result.get('recall_macro_std', 0) > 0 else 0
-            f1_std = result.get('f1_macro_std', 0) / num_labels if result.get('f1_macro_std', 0) > 0 else 0
-            
-            model_metrics[label] = {
-                'precision': round(float(prec), 4),
-                'precision_std': round(float(prec_std), 4),
-                'recall': round(float(rec), 4),
-                'recall_std': round(float(rec_std), 4),
-                'f1': round(float(f1), 4),
-                'f1_std': round(float(f1_std), 4),
-                'note': f'Derived from macro metrics (macro_value / {num_labels} labels)'
-            }
+        artifact_dir = result.get("artifact_dir", "")
+        used_artifact = False
+        if artifact_dir:
+            pred_path = Path(str(artifact_dir)) / "predictions.npy"
+            label_path = Path(str(artifact_dir)) / "labels.npy"
+            if pred_path.exists() and label_path.exists():
+                y_pred = np.load(pred_path)
+                y_true = np.load(label_path)
+                if y_pred.ndim == 2 and y_true.ndim == 2 and y_pred.shape == y_true.shape:
+                    label_metrics = calculate_per_label_metrics(y_true, y_pred, LABEL_COLUMNS)
+                    for label in LABEL_COLUMNS:
+                        item = label_metrics.get(label, {})
+                        model_metrics[label] = {
+                            'precision': round(float(item.get('precision', 0.0)), 4),
+                            'precision_std': 0.0,
+                            'recall': round(float(item.get('recall', 0.0)), 4),
+                            'recall_std': 0.0,
+                            'f1': round(float(item.get('f1', 0.0)), 4),
+                            'f1_std': 0.0,
+                            'note': 'Computed from selected best-fold predictions/labels'
+                        }
+                    used_artifact = True
+
+        if not used_artifact:
+            for label in LABEL_COLUMNS:
+                model_metrics[label] = {
+                    'precision': round(float(result.get('precision_macro_mean', 0.0)), 4),
+                    'precision_std': round(float(result.get('precision_macro_std', 0.0)), 4),
+                    'recall': round(float(result.get('recall_macro_mean', 0.0)), 4),
+                    'recall_std': round(float(result.get('recall_macro_std', 0.0)), 4),
+                    'f1': round(float(result.get('f1_macro_mean', 0.0)), 4),
+                    'f1_std': round(float(result.get('f1_macro_std', 0.0)), 4),
+                    'note': 'Fallback from macro metrics (best-fold aggregate row)'
+                }
+
+        if 'selected_fold' in result:
+            model_metrics['selected_fold'] = int(result.get('selected_fold', 0))
+        model_metrics['artifact_dir'] = str(artifact_dir) if artifact_dir else ''
         
         per_label_report['models'][model_name] = model_metrics
     
@@ -153,13 +169,13 @@ def generate_per_label_metrics_report(comparison_results, output_dir="results/re
     
     print(f"\n✓ Per-label metrics report saved to: {report_json}")
     print(f"  Labels analyzed: {', '.join(LABEL_COLUMNS)}")
-    print(f"  Note: Metrics derived from macro averages for each label")
+    print("  Note: Best-fold artifact predictions are used when available")
     
     return per_label_report
 
 
 def generate_multilabel_metrics_report(comparison_results, output_dir="results/research_comparison"):
-    """Generate comprehensive report on multilabel-specific metrics"""
+    """Generate comprehensive report on multilabel-specific metrics (best fold per model)."""
     
     print("\n" + "=" * 80)
     print("MULTILABEL-SPECIFIC METRICS SUMMARY")
@@ -170,6 +186,7 @@ def generate_multilabel_metrics_report(comparison_results, output_dir="results/r
     
     multilabel_report = {
         "timestamp": datetime.now().isoformat(),
+        "selection": "Best fold per model",
         "metrics_included": {
             "hamming_loss": "Fraction of labels predicted incorrectly per sample",
             "subset_accuracy": "Exact match accuracy (all labels correct)",
@@ -203,6 +220,7 @@ def generate_multilabel_metrics_report(comparison_results, output_dir="results/r
         multilabel_report['models'].append({
             'rank': rank,
             'model': result['model'],
+            'selected_fold': int(result.get('selected_fold', 0)),
             'hamming_loss_mean': hamming_loss,
             'hamming_loss_std': result.get('hamming_loss_std', 0),
             'subset_accuracy_mean': subset_acc,

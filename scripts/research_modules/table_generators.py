@@ -10,11 +10,11 @@ if str(project_root) not in sys.path:
 
 
 def generate_comprehensive_metrics_report(comparison_results, output_dir="results/research_comparison"):
-    """Generate comprehensive metrics report for ALL models including per-label metrics"""
+    """Generate comprehensive metrics report for all models using selected best fold."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    print("\n📊 Generating comprehensive metrics report for all models...")
+    print("\n📊 Generating comprehensive metrics report (best fold per model)...")
     
     # Find all available metric columns
     all_metrics = set()
@@ -26,7 +26,7 @@ def generate_comprehensive_metrics_report(comparison_results, output_dir="result
     all_metrics = sorted([m for m in all_metrics if m not in non_metrics])
     
     print(f"\n  ✓ Found {len(all_metrics)} unique metrics across all models")
-    print(f"  ✓ Processing {len(comparison_results)} models")
+    print(f"  ✓ Processing {len(comparison_results)} models (one best fold each)")
     
     # Create comprehensive CSV with ALL metrics
     comprehensive_df = pd.DataFrame(comparison_results)
@@ -98,11 +98,11 @@ def generate_comprehensive_metrics_report(comparison_results, output_dir="result
     summary_file = output_dir / "metrics_summary_statistics.txt"
     with open(summary_file, 'w') as f:
         f.write("=" * 120 + "\n")
-        f.write("COMPREHENSIVE METRICS SUMMARY - ALL MODELS\n")
+        f.write("COMPREHENSIVE METRICS SUMMARY - BEST FOLD PER MODEL\n")
         f.write("=" * 120 + "\n\n")
         
         # Statistics for each metric
-        f.write("METRIC STATISTICS (Mean ± Std across all models):\n")
+        f.write("METRIC STATISTICS (Across selected best-fold rows of all models):\n")
         f.write("-" * 120 + "\n")
         
         for col in metric_cols:
@@ -127,11 +127,11 @@ def generate_comprehensive_metrics_report(comparison_results, output_dir="result
 
 
 def generate_detailed_comparison_table(comparison_results, output_dir="results/research_comparison"):
-    """Generate detailed comparison tables for ALL models with ALL metrics"""
+    """Generate detailed comparison tables for best-fold rows of all models."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    print("\n📋 Generating comprehensive comparison tables for all models/metrics...")
+    print("\n📋 Generating comprehensive comparison tables (best fold per model)...")
     
     # Create master DataFrame
     df_all = pd.DataFrame(comparison_results)
@@ -146,10 +146,11 @@ def generate_detailed_comparison_table(comparison_results, output_dir="results/r
     model_cols = [col for col in df_all.columns if col not in numeric_cols]
     
     # Create organized comparison table (key metrics subset)
-    key_metrics = ['f1_macro_mean', 'f1_macro_std', 'f1_micro_mean', 'f1_micro_std',
+    key_metrics = ['selected_fold',
+                  'f1_macro_mean', 'f1_macro_std', 'f1_micro_mean', 'f1_micro_std',
                   'precision_macro_mean', 'precision_micro_mean', 
                   'recall_macro_mean', 'recall_micro_mean',
-                  'accuracy_mean', 'accuracy_std',
+                  'accuracy_micro_mean', 'accuracy_macro_mean',
                   'hamming_loss_mean', 'hamming_loss_std',
                   'subset_accuracy_mean', 'subset_accuracy_std']
     
@@ -212,7 +213,7 @@ def generate_detailed_comparison_table(comparison_results, output_dir="results/r
     # Generate per-category summary tables
     categories = {
         'Machine Learning': ['Linear SVM', 'Logistic Regression', 'Naive Bayes'],
-        'Deep Learning': ['CNN', 'LSTM', 'BiLSTM'],
+        'Deep Learning': ['LSTM', 'BiLSTM'],
         'Transformers': ['BERT', 'RoBERTa'],
         'LLM': ['llama', 'LLM'],
     }

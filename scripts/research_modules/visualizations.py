@@ -234,7 +234,7 @@ def generate_smote_visualization(output_dir="results/research_comparison"):
         ax.text(
             0.02,
             0.98,
-            f"Pos. rate: {before_rate:.1%} -> {after_rate:.1%}",
+            f"Pos. rate: From {before_rate:.1%} To {after_rate:.1%}",
             transform=ax.transAxes,
             va="top",
             ha="left",

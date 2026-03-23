@@ -1,0 +1,25 @@
+BEST FOLD MODEL COMPARISON REPORT
+========================================================================================================================
+Rank  | Model                          | Fold   | Acc-Micro  | Acc-Macro  | F1-Macro   | F1-Micro  
+------------------------------------------------------------------------------------------------------------------------
+1     | BERT                           | 10     | 0.9275     | 0.9275     | 0.8778     | 0.9198    
+2     | RoBERTa                        | 10     | 0.9233     | 0.9233     | 0.8627     | 0.9168    
+3     | BiLSTM                         | 6      | 0.8250     | 0.8250     | 0.7443     | 0.8260    
+4     | LSTM                           | 3      | 0.8403     | 0.8403     | 0.7229     | 0.8326    
+5     | llama-3.1-8b-instant (LLM, Few | 9      | 0.8285     | 0.8285     | 0.7044     | 0.8299    
+6     | Linear SVM                     | 2      | 0.7389     | 0.7389     | 0.6557     | 0.7396    
+7     | Logistic Regression            | 2      | 0.7278     | 0.7278     | 0.6535     | 0.7322    
+8     | llama-3.1-8b-instant (LLM, Zer | 9      | 0.6736     | 0.6736     | 0.6084     | 0.7234    
+9     | Naive Bayes                    | 7      | 0.5708     | 0.5708     | 0.5687     | 0.6326    
+
+PER-LABEL THRESHOLDS (mean ± std)
+------------------------------------------------------------------------------------------------------------------------
+BERT: relevance=0.750±0.000, concreteness=0.100±0.000, constructive=0.550±0.000
+RoBERTa: relevance=0.350±0.000, concreteness=0.400±0.000, constructive=0.550±0.000
+BiLSTM: relevance=0.100±0.000, concreteness=0.300±0.000, constructive=0.850±0.000
+LSTM: relevance=0.100±0.000, concreteness=0.550±0.000, constructive=0.800±0.000
+llama-3.1-8b-instant (LLM, Few-shot k=100): n/a
+Linear SVM: n/a
+Logistic Regression: n/a
+llama-3.1-8b-instant (LLM, Zero-shot): n/a
+Naive Bayes: n/a

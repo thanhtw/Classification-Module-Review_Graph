@@ -42,8 +42,6 @@ from research_modules import (
     generate_smote_visualization,
     generate_confusion_matrix_visualizations,
     generate_per_label_confusion_matrices,
-    generate_training_curves,
-    generate_comprehensive_heatmaps,
     generate_model_comparison_visualizations,
     # Table generators
     generate_comprehensive_metrics_report,
@@ -540,9 +538,7 @@ def run_research_comparison(n_folds=10, seed=42):
         generate_model_comparison_visualizations(comparison_results, results_dir)
         cm_vis = generate_confusion_matrix_visualizations(results_dir)
         per_label_cm_dir = generate_per_label_confusion_matrices(results_dir)
-        curves_vis = generate_training_curves(results_dir)
         comp_csv = generate_comprehensive_metrics_report(comparison_results, results_dir)
-        heatmap_vis = generate_comprehensive_heatmaps(comparison_results, results_dir)
         complete_csv, key_metrics_csv, latex_file = generate_detailed_comparison_table(comparison_results, results_dir)
         per_label_report = generate_per_label_metrics_report(comparison_results, results_dir)
         multilabel_report = generate_multilabel_metrics_report(comparison_results, results_dir)
@@ -560,10 +556,6 @@ def run_research_comparison(n_folds=10, seed=42):
             print(f"  ✓ {cm_vis}")
         if per_label_cm_dir:
             print(f"  ✓ Per-label confusion matrices: {per_label_cm_dir}/")
-        if curves_vis:
-            print(f"  ✓ {curves_vis}")
-        if heatmap_vis:
-            print(f"  ✓ {heatmap_vis}")
         
         print("\n📋 COMPREHENSIVE DATA TABLES & REPORTS:")
         print(f"  ✓ {comp_csv}")

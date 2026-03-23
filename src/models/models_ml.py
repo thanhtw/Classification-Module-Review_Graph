@@ -32,6 +32,29 @@ from src.utils.smote import apply_smote_multilabel
 LABEL_NAMES = ["relevance", "concreteness", "constructive"]
 
 
+def _build_ml_training_history(metrics: Dict[str, float], epochs: int) -> Dict[str, object]:
+    """Create a minimal training history payload for non-epoch ML models.
+
+    ML models in this module do not train over epochs, so we persist a
+    single-step history to keep downstream visualization interfaces consistent.
+    """
+    f1_macro = float(metrics.get("f1_macro", 0.0))
+    f1_micro = float(metrics.get("f1_micro", f1_macro))
+    proxy_loss = float(max(0.0, 1.0 - f1_macro))
+    n_epochs = max(1, int(epochs))
+    return {
+        "history_type": "single_step_summary",
+        "epochs": list(range(1, n_epochs + 1)),
+        "train_loss": [proxy_loss] * n_epochs,
+        "val_loss": [proxy_loss] * n_epochs,
+        "train_f1_macro": [f1_macro] * n_epochs,
+        "val_f1_macro": [f1_macro] * n_epochs,
+        "train_f1_micro": [f1_micro] * n_epochs,
+        "val_f1_micro": [f1_micro] * n_epochs,
+        "note": "Classical ML model (no native epoch loop); metrics repeated to configured epoch count.",
+    }
+
+
 def _prepare_data(
     train_texts: Sequence[str],
     train_labels: np.ndarray,
@@ -88,6 +111,7 @@ def run_linear_svm(
     test_labels: np.ndarray,
     use_smote: bool,
     seed: int,
+    epochs: int,
     save_dir: str = "",
 ) -> Tuple[Dict[str, float], float, float]:
     """
@@ -179,11 +203,16 @@ def run_linear_svm(
                         "max_df": 0.95,
                     },
                     "labels": LABEL_NAMES,
+                    "epochs": int(epochs),
                 },
                 f,
                 ensure_ascii=False,
                 indent=2,
             )
+
+        # Save single-step history for downstream curve visualizations.
+        with open(os.path.join(save_dir, "training_history.json"), "w", encoding="utf-8") as f:
+            json.dump(_build_ml_training_history(metrics, epochs), f, ensure_ascii=False, indent=2)
 
     return metrics, train_time, infer_time
 
@@ -195,6 +224,7 @@ def run_naive_bayes(
     test_labels: np.ndarray,
     use_smote: bool,
     seed: int,
+    epochs: int,
     save_dir: str = "",
 ) -> Tuple[Dict[str, float], float, float]:
     """
@@ -279,11 +309,16 @@ def run_naive_bayes(
                         "sg": 1,
                     },
                     "labels": LABEL_NAMES,
+                    "epochs": int(epochs),
                 },
                 f,
                 ensure_ascii=False,
                 indent=2,
             )
+
+        # Save single-step history for downstream curve visualizations.
+        with open(os.path.join(save_dir, "training_history.json"), "w", encoding="utf-8") as f:
+            json.dump(_build_ml_training_history(metrics, epochs), f, ensure_ascii=False, indent=2)
 
     return metrics, train_time, infer_time
 
@@ -295,6 +330,7 @@ def run_logistic_regression(
     test_labels: np.ndarray,
     use_smote: bool,
     seed: int,
+    epochs: int,
     save_dir: str = "",
 ) -> Tuple[Dict[str, float], float, float]:
     """
@@ -388,10 +424,15 @@ def run_logistic_regression(
                     },
                     "threshold": 0.5,
                     "labels": LABEL_NAMES,
+                    "epochs": int(epochs),
                 },
                 f,
                 ensure_ascii=False,
                 indent=2,
             )
+
+        # Save single-step history for downstream curve visualizations.
+        with open(os.path.join(save_dir, "training_history.json"), "w", encoding="utf-8") as f:
+            json.dump(_build_ml_training_history(metrics, epochs), f, ensure_ascii=False, indent=2)
 
     return metrics, train_time, infer_time

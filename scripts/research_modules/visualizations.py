@@ -1,5 +1,6 @@
 """Module for generating visualizations (SMOTE, confusion matrices, training curves, heatmaps)"""
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -8,46 +9,102 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+from matplotlib.ticker import FuncFormatter
 
 project_root = Path(__file__).resolve().parents[2]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from src.training.config import LABEL_COLUMNS
+from src.utils.metrics import compute_metrics
 from sklearn.metrics import confusion_matrix
 
 
+def _thousands_formatter(x, _):
+    return f"{int(x):,}"
+
+
+def _short_model_name(name: str) -> str:
+    """Normalize long model names for cleaner figure labels."""
+    aliases = {
+        "llama-3.1-8b-instant (LLM, Zero-shot)": "LLM Zero-shot",
+        "llama-3.1-8b-instant (LLM, Few-shot k=100)": "LLM Few-shot",
+        "Linear SVM": "Linear SVM",
+        "Logistic Regression": "Logistic Reg.",
+        "Naive Bayes": "Naive Bayes",
+        "RoBERTa": "RoBERTa",
+    }
+    return aliases.get(name, name)
+
+
 def _load_best_fold_map() -> dict:
-    """Load model -> best fold mapping from training summary CSV."""
-    best_fold_csv = Path("results/modular_multimodel/best_fold_per_model.csv")
-    if not best_fold_csv.exists():
-        return {}
+    """Load model -> selected best fold mapping from comparison outputs.
 
-    try:
-        df = pd.read_csv(best_fold_csv)
-    except Exception:
-        return {}
+    Priority:
+    1) results/research_comparison/best_fold_model_comparison.csv
+    2) results/research_comparison/all_models_comparison.csv
+    3) results/modular_multimodel/best_fold_per_model.csv
+    """
+    alias_to_key = {
+        "linear svm": "linear_svm",
+        "logistic regression": "logistic_regression",
+        "naive bayes": "naive_bayes",
+        "lstm": "lstm",
+        "bilstm": "bilstm",
+        "bert": "bert",
+        "roberta": "roberta",
+        "llama-3.1-8b-instant (llm, zero-shot)": "llm_zero_shot",
+        "llama-3.1-8b-instant (llm, few-shot k=100)": "llm_few_shot",
+    }
 
-    model_col = None
-    fold_col = None
-    for candidate in ["model", "Model", "model_key"]:
-        if candidate in df.columns:
-            model_col = candidate
-            break
-    for candidate in ["best_fold", "fold", "Fold"]:
-        if candidate in df.columns:
-            fold_col = candidate
-            break
-
-    if model_col is None or fold_col is None:
-        return {}
+    candidate_csvs = [
+        Path("results/research_comparison/best_fold_model_comparison.csv"),
+        Path("results/research_comparison/all_models_comparison.csv"),
+        Path("results/modular_multimodel/best_fold_per_model.csv"),
+    ]
 
     mapping = {}
-    for _, row in df.iterrows():
+    for csv_path in candidate_csvs:
+        if not csv_path.exists():
+            continue
+
         try:
-            mapping[str(row[model_col])] = int(row[fold_col])
+            df = pd.read_csv(csv_path)
         except Exception:
             continue
+
+        fold_col = None
+        for candidate in ["selected_fold", "best_fold", "fold", "Fold"]:
+            if candidate in df.columns:
+                fold_col = candidate
+                break
+        if fold_col is None:
+            continue
+
+        has_model_key = "model_key" in df.columns
+        has_model_name = "model" in df.columns or "Model" in df.columns
+        model_name_col = "model" if "model" in df.columns else ("Model" if "Model" in df.columns else None)
+
+        for _, row in df.iterrows():
+            try:
+                fold_num = int(row[fold_col])
+            except Exception:
+                continue
+
+            candidate_keys = []
+            if has_model_key:
+                candidate_keys.append(str(row["model_key"]).strip())
+            if has_model_name and model_name_col is not None:
+                raw_name = str(row[model_name_col]).strip()
+                candidate_keys.append(raw_name)
+                candidate_keys.append(alias_to_key.get(raw_name.lower(), ""))
+
+            for key in candidate_keys:
+                if not key:
+                    continue
+                # Keep first source hit per key to preserve file priority.
+                mapping.setdefault(key, fold_num)
+
     return mapping
 
 
@@ -68,24 +125,26 @@ def _to_binary_label_matrix(arr: np.ndarray, n_labels: int) -> np.ndarray:
 
 
 def _build_3x3_label_confusion(y_true: np.ndarray, y_pred: np.ndarray, n_labels: int) -> np.ndarray:
-    """
-    Build label-to-label confusion matrix for multilabel predictions.
+    """Build a multilabel-aware 3x3 label confusion matrix.
 
-    Rule:
-    - Bit 0 -> relevance
-    - Bit 1 -> concreteness
-    - Bit 2 -> constructive
-    - For each true positive label i and each predicted positive label j, increment [i, j].
+    For each sample, every true-positive label contributes an integer count to
+    each predicted-positive label. This keeps matrix entries as integer counts.
     """
+    if y_true.shape != y_pred.shape:
+        raise ValueError(f"Shape mismatch: {y_true.shape} vs {y_pred.shape}")
+
     cm = np.zeros((n_labels, n_labels), dtype=int)
-    for sample_idx in range(y_true.shape[0]):
-        true_labels = y_true[sample_idx]
-        pred_labels = y_pred[sample_idx]
-        for true_idx in range(n_labels):
-            if true_labels[true_idx] == 1:
-                for pred_idx in range(n_labels):
-                    if pred_labels[pred_idx] == 1:
-                        cm[true_idx, pred_idx] += 1
+    for s in range(y_true.shape[0]):
+        true_idx = np.where(y_true[s] == 1)[0]
+        pred_idx = np.where(y_pred[s] == 1)[0]
+
+        if true_idx.size == 0 or pred_idx.size == 0:
+            continue
+
+        for i in true_idx:
+            for j in pred_idx:
+                cm[i, j] += 1
+
     return cm
 
 
@@ -125,48 +184,78 @@ def generate_smote_visualization(output_dir="results/research_comparison"):
         print("⚠ SMOTE analysis file not found")
         return None
     
-    # Create figure with subplots
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-    fig.suptitle('SMOTE Impact on Dataset Balance', fontsize=16, fontweight='bold')
-    
     labels = LABEL_COLUMNS
     before_pos = smote_data.get('label_pos_before', [])
     before_neg = smote_data.get('label_neg_before', [])
     after_pos = smote_data.get('label_pos_after', [])
     after_neg = smote_data.get('label_neg_after', [])
-    
-    # Plot for each label
+
+    sns.set_theme(style="whitegrid", context="paper")
+    plt.rcParams.update({
+        "font.family": "DejaVu Serif",
+        "axes.titlesize": 12,
+        "axes.labelsize": 10,
+        "xtick.labelsize": 9,
+        "ytick.labelsize": 9,
+    })
+
+    fig, axes = plt.subplots(1, len(labels), figsize=(16, 4.8), constrained_layout=True)
+    if len(labels) == 1:
+        axes = [axes]
+
+    fig.suptitle("SMOTE Effect on Label Distribution", fontsize=14, fontweight="semibold")
+    max_count = max(before_pos + before_neg + after_pos + after_neg)
+
+    color_map = {
+        "Before Negative": "#8FA3B8",
+        "Before Positive": "#4C6A92",
+        "After Negative": "#C9B37E",
+        "After Positive": "#8F6D1E",
+    }
+
     for idx, label in enumerate(labels):
-        ax_before = axes[0, idx]
-        ax_after = axes[1, idx]
-        
-        # Before SMOTE
-        before_x = [f'{label}\n(Neg)', f'{label}\n(Pos)']
-        before_y = [before_neg[idx], before_pos[idx]]
-        colors_before = ['#FF6B6B', '#4ECDC4']
-        ax_before.bar(before_x, before_y, color=colors_before, edgecolor='black', linewidth=1.5)
-        ax_before.set_ylabel('Count', fontsize=11, fontweight='bold')
-        ax_before.set_title(f'{label} - Before SMOTE', fontsize=12, fontweight='bold')
-        ax_before.set_ylim(0, max(after_pos + after_neg) * 1.1)
-        # Add value labels on bars
-        for i, v in enumerate(before_y):
-            ax_before.text(i, v + 50, str(v), ha='center', va='bottom', fontweight='bold')
-        ax_before.grid(axis='y', alpha=0.3, linestyle='--')
-        
-        # After SMOTE
-        after_x = [f'{label}\n(Neg)', f'{label}\n(Pos)']
-        after_y = [after_neg[idx], after_pos[idx]]
-        colors_after = ['#95E1D3', '#F38181']
-        ax_after.bar(after_x, after_y, color=colors_after, edgecolor='black', linewidth=1.5)
-        ax_after.set_ylabel('Count', fontsize=11, fontweight='bold')
-        ax_after.set_title(f'{label} - After SMOTE (Balanced)', fontsize=12, fontweight='bold')
-        ax_after.set_ylim(0, max(after_pos + after_neg) * 1.1)
-        # Add value labels on bars
-        for i, v in enumerate(after_y):
-            ax_after.text(i, v + 50, str(v), ha='center', va='bottom', fontweight='bold')
-        ax_after.grid(axis='y', alpha=0.3, linestyle='--')
-    
-    plt.tight_layout()
+        ax = axes[idx]
+        categories = ["Before Negative", "Before Positive", "After Negative", "After Positive"]
+        values = [before_neg[idx], before_pos[idx], after_neg[idx], after_pos[idx]]
+        colors = [color_map[c] for c in categories]
+
+        bars = ax.bar(categories, values, color=colors, edgecolor="#444444", linewidth=0.8)
+        ax.set_title(label.capitalize(), fontweight="semibold")
+        ax.set_ylim(0, max_count * 1.14)
+        ax.yaxis.set_major_formatter(FuncFormatter(_thousands_formatter))
+        ax.grid(axis="y", linestyle="--", alpha=0.35)
+        ax.grid(axis="x", visible=False)
+        ax.tick_params(axis="x", rotation=24)
+
+        before_total = before_neg[idx] + before_pos[idx]
+        after_total = after_neg[idx] + after_pos[idx]
+        before_rate = (before_pos[idx] / before_total) if before_total else 0.0
+        after_rate = (after_pos[idx] / after_total) if after_total else 0.0
+        ax.text(
+            0.02,
+            0.98,
+            f"Pos. rate: {before_rate:.1%} -> {after_rate:.1%}",
+            transform=ax.transAxes,
+            va="top",
+            ha="left",
+            fontsize=8.5,
+            color="#2F3A4A",
+            bbox=dict(facecolor="#F6F7F9", edgecolor="#D4D9E0", boxstyle="round,pad=0.25"),
+        )
+
+        for bar, val in zip(bars, values):
+            ax.annotate(
+                f"{val:,}",
+                xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()),
+                xytext=(0, 4),
+                textcoords="offset points",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+                color="#1E2A36",
+            )
+
+    axes[0].set_ylabel("Sample Count")
     
     # Save figure
     smote_vis_path = output_dir / "smote_impact_visualization.png"
@@ -182,7 +271,7 @@ def generate_confusion_matrix_visualizations(output_dir="results/research_compar
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    print("\n🔍 Generating 3×3 confusion matrices for ALL models...")
+    print("\n🔍 Generating true 3×3 confusion matrices for ALL models...")
     
     model_artifacts_dir = Path("results/modular_multimodel/model_artifacts")
     if not model_artifacts_dir.exists():
@@ -234,6 +323,7 @@ def generate_confusion_matrix_visualizations(output_dir="results/research_compar
                 continue
 
             cm = _build_3x3_label_confusion(y_true, y_pred, n_labels)
+            metrics = compute_metrics(y_true, y_pred)
 
             sns.heatmap(
                 cm,
@@ -249,7 +339,13 @@ def generate_confusion_matrix_visualizations(output_dir="results/research_compar
                 linecolor='black',
                 square=True,
             )
-            axes[model_idx].set_title(f'{model_name}', fontsize=11, fontweight='bold')
+            axes[model_idx].set_title(
+                f"{model_name}\n"
+                f"Acc-Micro={metrics.get('accuracy_micro', 0.0):.3f}, "
+                f"Acc-Macro={metrics.get('accuracy_macro', 0.0):.3f}",
+                fontsize=10,
+                fontweight='bold',
+            )
             axes[model_idx].set_ylabel('True Label', fontweight='bold', fontsize=9)
             axes[model_idx].set_xlabel('Predicted Label', fontweight='bold', fontsize=9)
             success_count += 1
@@ -275,17 +371,14 @@ def generate_confusion_matrix_visualizations(output_dir="results/research_compar
 
 
 def generate_per_label_confusion_matrices(output_dir="results/research_comparison"):
-    """Generate one 3x3 label confusion matrix per model using bit-position mapping.
+    """Generate per-label 2x2 confusion matrices styled for presentation.
 
-    Mapping:
-    - bit 0: relevance
-    - bit 1: concreteness
-    - bit 2: constructive
+    Output: one figure per model (best fold), with 3 panels (one per label).
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    print("\n📊 Generating 3×3 label confusion matrices...")
+    print("\n📊 Generating per-label 2×2 confusion matrices...")
     
     model_artifacts_dir = Path("results/modular_multimodel/model_artifacts")
     if not model_artifacts_dir.exists():
@@ -326,60 +419,46 @@ def generate_per_label_confusion_matrices(output_dir="results/research_compariso
             if y_true.shape != y_pred.shape:
                 print(f"  ⚠ {model_name}: shape mismatch {y_true.shape} vs {y_pred.shape}")
                 continue
-
-            cm = _build_3x3_label_confusion(y_true, y_pred, num_labels)
-            row_totals = cm.sum(axis=1)
-            per_label_accuracy = np.divide(
-                np.diag(cm),
-                np.maximum(row_totals, 1),
-                dtype=float,
-            )
-            avg_accuracy = float(np.mean(per_label_accuracy))
-
-            fig, ax = plt.subplots(figsize=(8.5, 7.2))
-            sns.heatmap(
-                cm,
-                annot=True,
-                fmt='d',
-                cmap='Blues',
-                ax=ax,
-                cbar=True,
-                cbar_kws={'label': 'Number of Instances'},
-                xticklabels=labels,
-                yticklabels=labels,
-                linewidths=1.2,
-                linecolor='black',
-                square=True,
-            )
+            fig, axes = plt.subplots(1, num_labels, figsize=(4.2 * num_labels + 1.2, 4.8))
+            if num_labels == 1:
+                axes = [axes]
 
             fold_num = fold_path.name.replace("fold_", "")
-            ax.set_title(
-                f"CONFUSION MATRIX - {model_name.upper()} (Fold {fold_num})\n"
-                f"3 Classification Labels: {', '.join(labels)}",
-                fontsize=12,
-                fontweight='bold',
-                pad=12,
-            )
-            ax.set_ylabel('True Label', fontweight='bold', fontsize=10)
-            ax.set_xlabel('Predicted Label', fontweight='bold', fontsize=10)
 
-            metrics_text = (
-                f"Average Accuracy per Label: {avg_accuracy:.4f}\n\n"
-                "Per-Label Accuracy:\n"
-                f"{labels[0]}: {per_label_accuracy[0]:.4f}\n"
-                f"{labels[1]}: {per_label_accuracy[1]:.4f}\n"
-                f"{labels[2]}: {per_label_accuracy[2]:.4f}"
-            )
-            fig.text(
-                0.78,
-                0.84,
-                metrics_text,
-                fontsize=8,
-                va='top',
-                bbox={'boxstyle': 'round', 'facecolor': '#C9E7F0', 'alpha': 0.9, 'edgecolor': 'gray'},
-            )
+            for idx, label in enumerate(labels):
+                ax = axes[idx]
+                # Matrix layout with labels=[1, 0]: [[TP, FN], [FP, TN]]
+                cm_label = confusion_matrix(y_true[:, idx], y_pred[:, idx], labels=[1, 0])
+                tp = int(cm_label[0, 0])
+                fn = int(cm_label[0, 1])
+                fp = int(cm_label[1, 0])
+                tn = int(cm_label[1, 1])
 
-            plt.tight_layout()
+                annot = np.array(
+                    [[f"{cm_label[r, c]}" for c in range(2)] for r in range(2)]
+                )
+
+                sns.heatmap(
+                    cm_label,
+                    annot=annot,
+                    fmt='',
+                    cmap='Blues',
+                    cbar=False,
+                    linewidths=1.0,
+                    linecolor='white',
+                    square=True,
+                    ax=ax,
+                    annot_kws={'fontsize': 10, 'fontweight': 'bold'},
+                )
+
+                ax.set_xticklabels(['Pred: Positive', 'Pred: Negative'], fontsize=9)
+                ax.set_yticklabels(['True: Positive', 'True: Negative'], fontsize=9, rotation=0)
+                ax.tick_params(top=False, bottom=True, left=True, right=False)
+                ax.set_xlabel('Predicted label', fontsize=9, fontweight='bold')
+                ax.set_ylabel('True label', fontsize=9, fontweight='bold')
+                ax.set_title(f"{label.capitalize()}", fontsize=12, pad=8)
+
+            plt.tight_layout(rect=[0.02, 0.03, 0.98, 0.98])
             cm_file = cm_out_dir / f"confusion_matrix_3labels_{model_name}_{fold_path.name}.png"
             plt.savefig(cm_file, dpi=300, bbox_inches='tight')
             print(f"  ✓ {model_name}: {cm_file}")
@@ -391,133 +470,6 @@ def generate_per_label_confusion_matrices(output_dir="results/research_compariso
     
     print(f"✓ Per-label confusion matrices saved to: {cm_out_dir}")
     return cm_out_dir
-
-
-def generate_training_curves(output_dir="results/research_comparison"):
-    """Generate training curves for selected best fold of each model when history exists."""
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    print("\n📈 Searching for best-fold training history data...")
-
-    model_artifacts_dir = Path("results/modular_multimodel/model_artifacts")
-    best_fold_map = _load_best_fold_map()
-    history_entries = []
-
-    if model_artifacts_dir.exists():
-        model_dirs = sorted([d for d in model_artifacts_dir.iterdir() if d.is_dir()])
-        for model_dir in model_dirs:
-            fold_dir = _get_model_fold_dir(model_dir, best_fold_map)
-            if fold_dir is None:
-                continue
-            history_path = fold_dir / "training_history.json"
-            if history_path.exists():
-                history_entries.append((model_dir.name, fold_dir.name, history_path))
-
-    if not history_entries:
-        print("⚠ No best-fold training history files found - skipping training curves")
-        return None
-
-    try:
-        n_models = len(history_entries)
-        fig, axes = plt.subplots(n_models, 2, figsize=(14, max(5, 4.5 * n_models)))
-        if n_models == 1:
-            axes = np.array([axes])
-
-        fig.suptitle('Training Curves: Selected Best Fold per Model', fontsize=14, fontweight='bold')
-
-        for row_idx, (model_name, fold_name, history_path) in enumerate(history_entries):
-            with open(history_path, 'r', encoding='utf-8') as f:
-                history = json.load(f)
-
-            ax1 = axes[row_idx, 0]
-            ax2 = axes[row_idx, 1]
-            epochs = list(range(1, len(history.get('train_loss', [])) + 1))
-            if not epochs:
-                continue
-
-            ax1.plot(epochs, history.get('train_f1_macro', []), 'o-', linewidth=2, markersize=3, label='Train F1-Macro', color='#3498DB')
-            ax1.plot(epochs, history.get('val_f1_macro', []), 's-', linewidth=2, markersize=3, label='Val F1-Macro', color='#E74C3C')
-            ax1.plot(epochs, history.get('train_f1_micro', []), 'o--', linewidth=1.8, markersize=3, label='Train F1-Micro', color='#2ECC71', alpha=0.8)
-            ax1.plot(epochs, history.get('val_f1_micro', []), 's--', linewidth=1.8, markersize=3, label='Val F1-Micro', color='#F39C12', alpha=0.8)
-            ax1.set_xlabel('Epochs', fontsize=10, fontweight='bold')
-            ax1.set_ylabel('F1 Score', fontsize=10, fontweight='bold')
-            ax1.set_title(f'{model_name} {fold_name}: F1', fontsize=11, fontweight='bold')
-            ax1.grid(True, alpha=0.3)
-            ax1.set_ylim(0, 1.0)
-            ax1.legend(fontsize=8)
-
-            ax2.plot(epochs, history.get('train_loss', []), 'o-', linewidth=2, markersize=3, label='Train loss', color='#3498DB')
-            ax2.plot(epochs, history.get('val_loss', []), 's-', linewidth=2, markersize=3, label='Val loss', color='#E74C3C')
-            ax2.set_xlabel('Epochs', fontsize=10, fontweight='bold')
-            ax2.set_ylabel('Loss', fontsize=10, fontweight='bold')
-            ax2.set_title(f'{model_name} {fold_name}: Loss', fontsize=11, fontweight='bold')
-            ax2.grid(True, alpha=0.3)
-            ax2.legend(fontsize=8)
-
-        plt.tight_layout()
-        curves_path = output_dir / "training_curves_best_folds.png"
-        plt.savefig(curves_path, dpi=300, bbox_inches='tight')
-        print(f"✓ Best-fold training curves saved to: {curves_path}")
-        plt.close()
-
-        return curves_path
-    except Exception as e:
-        print(f"⚠ Could not generate training curves: {e}")
-        return None
-
-
-def generate_comprehensive_heatmaps(comparison_results, output_dir="results/research_comparison"):
-    """Generate comprehensive heatmaps showing all models vs all metrics"""
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    print("\n🔥 Generating comprehensive metric heatmaps...")
-    
-    # Create DataFrame
-    df = pd.DataFrame(comparison_results)
-    
-    # Extract numeric columns
-    numeric_df = df.select_dtypes(include=['float64', 'int64'])
-    
-    # Get model names
-    models = df['model'].values
-    
-    # Select key metrics for heatmap
-    key_metrics = [col for col in numeric_df.columns 
-                   if any(m in col.lower() for m in ['f1', 'precision', 'recall', 'accuracy', 'hamming', 'subset'])]
-    
-    if len(key_metrics) > 0:
-        # Create heatmap data
-        heatmap_df = numeric_df[key_metrics].copy()
-        heatmap_df.index = models
-        
-        # Normalize to 0-1 range for better visualization
-        heatmap_normalized = (heatmap_df - heatmap_df.min()) / (heatmap_df.max() - heatmap_df.min() + 1e-10)
-        
-        # Create large figure for all metrics
-        fig, ax = plt.subplots(figsize=(max(16, len(key_metrics)), max(12, len(models))))
-        
-        sns.heatmap(heatmap_normalized, annot=True, fmt='.3f', cmap='RdYlGn', 
-                   ax=ax, cbar_kws={'label': 'Normalized Score'}, linewidths=0.5)
-        
-        ax.set_title(f'Comprehensive Metric Heatmap: All {len(models)} Models × {len(key_metrics)} Metrics', 
-                    fontsize=14, fontweight='bold', pad=20)
-        ax.set_xlabel('Metrics', fontsize=12, fontweight='bold')
-        ax.set_ylabel('Models', fontsize=12, fontweight='bold')
-        
-        plt.xticks(rotation=45, ha='right')
-        plt.yticks(rotation=0)
-        plt.tight_layout()
-        
-        heatmap_path = output_dir / "comprehensive_metrics_heatmap.png"
-        plt.savefig(heatmap_path, dpi=300, bbox_inches='tight')
-        print(f"  ✓ Comprehensive heatmap saved to: {heatmap_path}")
-        plt.close()
-        
-        return heatmap_path
-    
-    return None
 
 
 def generate_model_comparison_visualizations(comparison_results, output_dir="results/research_comparison"):
@@ -533,70 +485,140 @@ def generate_model_comparison_visualizations(comparison_results, output_dir="res
     sorted_results = sorted(comparison_results, key=lambda x: x.get('f1_macro_mean', 0), reverse=True)
     
     # Prepare data
-    models = [r['model'][:30] for r in sorted_results]  # Truncate for readability
+    models = [_short_model_name(r['model']) for r in sorted_results]
     f1_macro = [r.get('f1_macro_mean', 0) for r in sorted_results]
     f1_micro = [r.get('f1_micro_mean', 0) for r in sorted_results]
     hamming_loss = [r.get('hamming_loss_mean', 0) for r in sorted_results]
     subset_acc = [r.get('subset_accuracy_mean', 0) for r in sorted_results]
-    
-    # **Figure 1: F1 Score Comparison**
-    fig, ax = plt.subplots(figsize=(14, 8))
-    x = np.arange(len(models))
-    width = 0.35
-    
-    bars1 = ax.bar(x - width/2, f1_macro, width, label='F1-Macro', color='#3498DB', edgecolor='black', linewidth=1.5)
-    bars2 = ax.bar(x + width/2, f1_micro, width, label='F1-Micro', color='#2ECC71', edgecolor='black', linewidth=1.5)
-    
-    ax.set_ylabel('F1 Score', fontsize=12, fontweight='bold')
-    ax.set_title('Model Performance Comparison: F1-Macro vs F1-Micro', fontsize=14, fontweight='bold')
-    ax.set_xticks(x)
-    ax.set_xticklabels(models, rotation=45, ha='right')
-    ax.legend(fontsize=11)
-    ax.grid(axis='y', alpha=0.3, linestyle='--')
-    ax.set_ylim(0, 1.0)
-    
-    # Add value labels
-    for bar in bars1:
-        height = bar.get_height()
-        if height > 0:
-            ax.text(bar.get_x() + bar.get_width()/2., height,
-                    f'{height:.3f}', ha='center', va='bottom', fontsize=8)
-    for bar in bars2:
-        height = bar.get_height()
-        if height > 0:
-            ax.text(bar.get_x() + bar.get_width()/2., height,
-                    f'{height:.3f}', ha='center', va='bottom', fontsize=8)
-    
+
+    sns.set_theme(style="whitegrid", context="paper")
+    plt.rcParams.update({
+        "font.family": "DejaVu Serif",
+        "axes.titlesize": 13,
+        "axes.labelsize": 10,
+        "xtick.labelsize": 9,
+        "ytick.labelsize": 9,
+        "legend.fontsize": 9,
+    })
+
+    # Figure 1: Horizontal dumbbell chart for F1 comparison
+    y = np.arange(len(models))
+    fig, ax = plt.subplots(figsize=(12.5, 6.8))
+
+    for i in range(len(models)):
+        ax.plot(
+            [f1_macro[i], f1_micro[i]],
+            [y[i], y[i]],
+            color="#AAB4C2",
+            linewidth=2,
+            zorder=1,
+        )
+
+    ax.scatter(f1_macro, y, color="#1F5A8A", s=46, label="F1-Macro", zorder=3)
+    ax.scatter(f1_micro, y, color="#2A9D8F", s=46, label="F1-Micro", zorder=3)
+
+    for i in range(len(models)):
+        ax.text(f1_macro[i] - 0.008, y[i] + 0.16, f"{f1_macro[i]:.3f}", ha="right", va="center", fontsize=8)
+        ax.text(f1_micro[i] + 0.008, y[i] - 0.16, f"{f1_micro[i]:.3f}", ha="left", va="center", fontsize=8)
+
+    ax.set_yticks(y)
+    ax.set_yticklabels(models)
+    ax.set_xlim(0.45, 1.00)
+    ax.set_xlabel("Score")
+    ax.set_title("Model Ranking by F1-Macro and F1-Micro")
+    ax.grid(axis="x", linestyle="--", alpha=0.4)
+    ax.grid(axis="y", visible=False)
+    ax.legend(loc="lower right", frameon=True)
+    ax.invert_yaxis()
+
     plt.tight_layout()
     fig_path = output_dir / "model_f1_comparison.png"
-    plt.savefig(fig_path, dpi=300, bbox_inches='tight')
+    plt.savefig(fig_path, dpi=400, bbox_inches='tight')
     print(f"✓ F1 comparison saved to: {fig_path}")
     plt.close()
-    
-    # **Figure 2: Hamming Loss vs Subset Accuracy**
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-    
-    # Hamming Loss
-    bars_hl = ax1.barh(models, hamming_loss, color='#E74C3C', edgecolor='black', linewidth=1.5)
-    ax1.set_xlabel('Hamming Loss (lower is better)', fontsize=12, fontweight='bold')
-    ax1.set_title('Hamming Loss by Model', fontsize=13, fontweight='bold')
-    ax1.grid(axis='x', alpha=0.3, linestyle='--')
-    for i, (bar, val) in enumerate(zip(bars_hl, hamming_loss)):
-        ax1.text(val + 0.01, bar.get_y() + bar.get_height()/2, f'{val:.4f}', 
-                va='center', fontsize=9, fontweight='bold')
-    
-    # Subset Accuracy
-    bars_sa = ax2.barh(models, subset_acc, color='#9B59B6', edgecolor='black', linewidth=1.5)
-    ax2.set_xlabel('Subset Accuracy (higher is better)', fontsize=12, fontweight='bold')
-    ax2.set_title('Subset Accuracy by Model', fontsize=13, fontweight='bold')
-    ax2.set_xlim(0, 1.0)
-    ax2.grid(axis='x', alpha=0.3, linestyle='--')
-    for i, (bar, val) in enumerate(zip(bars_sa, subset_acc)):
-        ax2.text(val + 0.01, bar.get_y() + bar.get_height()/2, f'{val:.4f}', 
-                va='center', fontsize=9, fontweight='bold')
-    
+
+    # Figure 2: Hamming loss and subset accuracy in paired publication panels
+    metric_df = pd.DataFrame({
+        "Model": models,
+        "Subset Accuracy": subset_acc,
+        "Hamming Loss": hamming_loss,
+    })
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13.8, 6.2), sharey=True)
+
+    subset_order = metric_df.sort_values("Subset Accuracy", ascending=True)
+    hamming_order = metric_df.sort_values("Hamming Loss", ascending=False)
+
+    bars_sa = ax1.barh(
+        subset_order["Model"],
+        subset_order["Subset Accuracy"],
+        color="#2A9D8F",
+        edgecolor="#2C3E50",
+        linewidth=0.8,
+    )
+    ax1.set_title("Subset Accuracy (Higher is Better)")
+    ax1.set_xlabel("Subset Accuracy")
+    ax1.set_xlim(0.0, 1.0)
+    ax1.grid(axis="x", linestyle="--", alpha=0.35)
+
+    bars_hl = ax2.barh(
+        hamming_order["Model"],
+        hamming_order["Hamming Loss"],
+        color="#B56576",
+        edgecolor="#2C3E50",
+        linewidth=0.8,
+    )
+    ax2.set_title("Hamming Loss (Lower is Better)")
+    ax2.set_xlabel("Hamming Loss")
+    ax2.set_xlim(0.0, max(hamming_loss) * 1.12 if hamming_loss else 1.0)
+    ax2.grid(axis="x", linestyle="--", alpha=0.35)
+
+    for bar in bars_sa:
+        val = bar.get_width()
+        ax1.text(min(val + 0.012, 0.985), bar.get_y() + bar.get_height() / 2, f"{val:.3f}", va="center", fontsize=8)
+    for bar in bars_hl:
+        val = bar.get_width()
+        ax2.text(val + 0.004, bar.get_y() + bar.get_height() / 2, f"{val:.3f}", va="center", fontsize=8)
+
     plt.tight_layout()
     fig_path = output_dir / "model_multilabel_metrics.png"
-    plt.savefig(fig_path, dpi=300, bbox_inches='tight')
+    plt.savefig(fig_path, dpi=400, bbox_inches='tight')
     print(f"✓ Multilabel metrics saved to: {fig_path}")
     plt.close()
+
+
+def _main() -> None:
+    """CLI for generating confusion matrices from saved fold artifacts."""
+    parser = argparse.ArgumentParser(
+        description="Generate confusion matrix visualizations from saved predictions/labels (no retraining)."
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="results/research_comparison",
+        help="Directory to save generated confusion matrix figures.",
+    )
+    parser.add_argument(
+        "--all_models_only",
+        action="store_true",
+        help="Generate only the combined all-models confusion figure.",
+    )
+    parser.add_argument(
+        "--per_model_only",
+        action="store_true",
+        help="Generate only per-model 3x3 confusion figures.",
+    )
+
+    args = parser.parse_args()
+    if args.all_models_only and args.per_model_only:
+        raise ValueError("Choose at most one of --all_models_only or --per_model_only")
+
+    print("\nGenerating confusion matrices from existing artifacts (no retraining)...")
+    if not args.per_model_only:
+        generate_confusion_matrix_visualizations(output_dir=args.output_dir)
+    if not args.all_models_only:
+        generate_per_label_confusion_matrices(output_dir=args.output_dir)
+
+
+if __name__ == "__main__":
+    _main()

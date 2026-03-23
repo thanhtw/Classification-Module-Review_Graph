@@ -20,8 +20,6 @@ from .visualizations import (
     generate_smote_visualization,
     generate_confusion_matrix_visualizations,
     generate_per_label_confusion_matrices,
-    generate_training_curves,
-    generate_comprehensive_heatmaps,
     generate_model_comparison_visualizations,
 )
 
@@ -47,8 +45,6 @@ __all__ = [
     "generate_smote_visualization",
     "generate_confusion_matrix_visualizations",
     "generate_per_label_confusion_matrices",
-    "generate_training_curves",
-    "generate_comprehensive_heatmaps",
     "generate_model_comparison_visualizations",
     # Table generators
     "generate_comprehensive_metrics_report",

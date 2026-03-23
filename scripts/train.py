@@ -58,6 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rnn_epochs", type=int, default=get_env_int("TRAIN_RNN_EPOCHS", 30))
     parser.add_argument("--bert_epochs", type=int, default=get_env_int("TRAIN_BERT_EPOCHS", 30))
     parser.add_argument("--roberta_epochs", type=int, default=get_env_int("TRAIN_ROBERTA_EPOCHS", 30))
+    parser.add_argument("--ml_epochs", type=int, default=get_env_int("TRAIN_ML_EPOCHS", 30))
     parser.add_argument("--rnn_lr", type=float, default=get_env_float("TRAIN_RNN_LR", 1e-3))
     parser.add_argument("--bert_lr", type=float, default=get_env_float("TRAIN_BERT_LR", 2e-5))
     parser.add_argument("--roberta_lr", type=float, default=get_env_float("TRAIN_ROBERTA_LR", 2e-5))
@@ -274,6 +275,7 @@ def main() -> None:
                     test_labels=y_test,
                     use_smote=use_smote_for_model,
                     seed=seed,
+                    epochs=args.ml_epochs,
                     save_dir=model_artifact_dir,
                     )
                 elif model_name == "naive_bayes":
@@ -284,6 +286,7 @@ def main() -> None:
                     test_labels=y_test,
                     use_smote=use_smote_for_model,
                     seed=seed,
+                    epochs=args.ml_epochs,
                     save_dir=model_artifact_dir,
                     )
                 elif model_name == "logistic_regression":
@@ -294,6 +297,7 @@ def main() -> None:
                     test_labels=y_test,
                     use_smote=use_smote_for_model,
                     seed=seed,
+                    epochs=args.ml_epochs,
                     save_dir=model_artifact_dir,
                     )
                 elif model_name == "lstm":

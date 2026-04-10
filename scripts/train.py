@@ -29,7 +29,15 @@ from src.training.config import (
     load_env_file,
 )
 from src.data.preprocessor import load_and_clean_data, set_seed
-from src.models.models_llm import run_llm_zero_few_shot
+try:
+    from src.models.models_llm import run_llm_zero_few_shot
+except ModuleNotFoundError as e:
+    run_llm_zero_few_shot = None
+    # Optionally print a warning, but do not break ML-only workflows
+    if 'groq' in str(e):
+        print("[WARN] groq module not found: LLM functionality will be unavailable. ML/SMOTE tests are unaffected.")
+    else:
+        raise
 from src.models.models_nn import run_lstm_like
 from src.models.models_ml import run_linear_svm, run_naive_bayes, run_logistic_regression
 from src.models.models_transformers import run_transformer

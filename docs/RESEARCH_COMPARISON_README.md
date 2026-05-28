@@ -76,6 +76,7 @@ Core comparison files in results/research_comparison:
 
 Metrics reports:
 - per_label_metrics_report.json
+- per_label_metrics_report.txt
 - multilabel_metrics_report.json
 
 Other reports:

@@ -563,6 +563,9 @@ def run_research_comparison(n_folds=10, seed=42):
         print(f"  ✓ {complete_csv}")
         print(f"  ✓ {key_metrics_csv}")
         print(f"  ✓ {latex_file}")
+        print(f"  ✓ {results_dir}/per_label_metrics_report.json")
+        print(f"  ✓ {results_dir}/per_label_metrics_report.txt")
+        print(f"  ✓ {results_dir}/multilabel_metrics_report.json")
         
         print("\n✨ Reports generated successfully!")
         print("=" * 80)

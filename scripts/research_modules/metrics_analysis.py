@@ -166,8 +166,70 @@ def generate_per_label_metrics_report(comparison_results, output_dir="results/re
     report_json = output_dir / "per_label_metrics_report.json"
     with open(report_json, 'w') as f:
         json.dump(per_label_report, f, indent=2)
+
+    report_txt = output_dir / "per_label_metrics_report.txt"
+    lines = [
+        "=" * 120,
+        "PER-LABEL PERFORMANCE REPORT",
+        "=" * 120,
+        "",
+        f"Generated: {per_label_report['timestamp']}",
+        f"Labels: {', '.join(LABEL_COLUMNS)}",
+        per_label_report["note"],
+        "",
+    ]
+
+    for label in LABEL_COLUMNS:
+        label_desc = per_label_report.get("label_descriptions", {}).get(label, label)
+        lines.append(f"{label.upper()} ({label_desc})")
+        lines.append("-" * 120)
+        lines.append(
+            f"{'Rank':<5} | {'Model':<50} | {'Fold':<6} | {'Precision':<10} | {'Recall':<10} | {'F1':<10}"
+        )
+        lines.append("-" * 120)
+
+        ranked_models = []
+        for model_name, model_metrics in per_label_report["models"].items():
+            metric_row = model_metrics.get(label, {})
+            ranked_models.append(
+                {
+                    "model": model_name,
+                    "selected_fold": int(model_metrics.get("selected_fold", 0)),
+                    "precision": float(metric_row.get("precision", 0.0)),
+                    "recall": float(metric_row.get("recall", 0.0)),
+                    "f1": float(metric_row.get("f1", 0.0)),
+                }
+            )
+
+        ranked_models.sort(key=lambda item: (item["f1"], item["recall"], item["precision"]), reverse=True)
+
+        for rank, item in enumerate(ranked_models, 1):
+            lines.append(
+                f"{rank:<5} | {item['model'][:50]:<50} | {item['selected_fold']:<6} | "
+                f"{item['precision']:<10.4f} | {item['recall']:<10.4f} | {item['f1']:<10.4f}"
+            )
+        lines.append("")
+
+    lines.append("MODEL SUMMARY (F1 BY LABEL)")
+    lines.append("-" * 120)
+    lines.append(
+        f"{'Model':<50} | {'Fold':<6} | "
+        + " | ".join(f"{label[:15]:<15}" for label in LABEL_COLUMNS)
+    )
+    lines.append("-" * 120)
+
+    for model_name, model_metrics in per_label_report["models"].items():
+        label_f1_values = " | ".join(
+            f"{float(model_metrics.get(label, {}).get('f1', 0.0)):<15.4f}" for label in LABEL_COLUMNS
+        )
+        lines.append(
+            f"{model_name[:50]:<50} | {int(model_metrics.get('selected_fold', 0)):<6} | {label_f1_values}"
+        )
+
+    report_txt.write_text("\n".join(lines), encoding="utf-8")
     
     print(f"\n✓ Per-label metrics report saved to: {report_json}")
+    print(f"✓ Per-label text report saved to: {report_txt}")
     print(f"  Labels analyzed: {', '.join(LABEL_COLUMNS)}")
     print("  Note: Best-fold artifact predictions are used when available")
     

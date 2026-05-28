@@ -112,6 +112,7 @@ Research outputs (results/research_comparison):
 - key_models_metrics_table.csv
 - comprehensive_model_comparison.tex
 - per_label_metrics_report.json
+- per_label_metrics_report.txt
 - multilabel_metrics_report.json
 - model_configurations.json
 - training_process_report.json

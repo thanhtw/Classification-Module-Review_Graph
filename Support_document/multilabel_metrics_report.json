@@ -1,0 +1,111 @@
+{
+  "timestamp": "2026-04-10T12:57:02.218118",
+  "selection": "Best fold per model",
+  "metrics_included": {
+    "hamming_loss": "Fraction of labels predicted incorrectly per sample",
+    "subset_accuracy": "Exact match accuracy (all labels correct)",
+    "macro_metrics": "Average of metrics computed for each label",
+    "micro_metrics": "Metrics computed globally by counting total TP, FP, FN"
+  },
+  "models": [
+    {
+      "rank": 1,
+      "model": "BERT",
+      "selected_fold": 10,
+      "hamming_loss_mean": 0.0725244072524407,
+      "hamming_loss_std": 0.0,
+      "subset_accuracy_mean": 0.7866108786610879,
+      "subset_accuracy_std": 0.0,
+      "f1_macro_mean": 0.8778476004282455,
+      "f1_macro_std": 0.0
+    },
+    {
+      "rank": 2,
+      "model": "RoBERTa",
+      "selected_fold": 10,
+      "hamming_loss_mean": 0.0767085076708507,
+      "hamming_loss_std": 0.0,
+      "subset_accuracy_mean": 0.7824267782426778,
+      "subset_accuracy_std": 0.0,
+      "f1_macro_mean": 0.8627352923347917,
+      "f1_macro_std": 0.0
+    },
+    {
+      "rank": 3,
+      "model": "BiLSTM",
+      "selected_fold": 6,
+      "hamming_loss_mean": 0.175,
+      "hamming_loss_std": 0.0,
+      "subset_accuracy_mean": 0.5208333333333334,
+      "subset_accuracy_std": 0.0,
+      "f1_macro_mean": 0.744258651737527,
+      "f1_macro_std": 0.0
+    },
+    {
+      "rank": 4,
+      "model": "LSTM",
+      "selected_fold": 3,
+      "hamming_loss_mean": 0.1597222222222222,
+      "hamming_loss_std": 0.0,
+      "subset_accuracy_mean": 0.5333333333333333,
+      "subset_accuracy_std": 0.0,
+      "f1_macro_mean": 0.7228608192662938,
+      "f1_macro_std": 0.0
+    },
+    {
+      "rank": 5,
+      "model": "Linear SVM",
+      "selected_fold": 1,
+      "hamming_loss_mean": 0.3111111111111111,
+      "hamming_loss_std": 0.0,
+      "subset_accuracy_mean": 0.3125,
+      "subset_accuracy_std": 0.0,
+      "f1_macro_mean": 0.6305250020899765,
+      "f1_macro_std": 0.0
+    },
+    {
+      "rank": 6,
+      "model": "Logistic Regression",
+      "selected_fold": 1,
+      "hamming_loss_mean": 0.3388888888888889,
+      "hamming_loss_std": 0.0,
+      "subset_accuracy_mean": 0.2541666666666666,
+      "subset_accuracy_std": 0.0,
+      "f1_macro_mean": 0.6084827173234466,
+      "f1_macro_std": 0.0
+    },
+    {
+      "rank": 7,
+      "model": "Naive Bayes",
+      "selected_fold": 10,
+      "hamming_loss_mean": 0.4225941422594142,
+      "hamming_loss_std": 0.0,
+      "subset_accuracy_mean": 0.1673640167364016,
+      "subset_accuracy_std": 0.0,
+      "f1_macro_mean": 0.5801395322239378,
+      "f1_macro_std": 0.0
+    },
+    {
+      "rank": 8,
+      "model": "llama-3.1-8b-instant (LLM, Zero-shot)",
+      "selected_fold": 9,
+      "hamming_loss_mean": 0.4449093444909344,
+      "hamming_loss_std": 0.0,
+      "subset_accuracy_mean": 0.2217573221757322,
+      "subset_accuracy_std": 0.0,
+      "f1_macro_mean": 0.0,
+      "f1_macro_std": 0.0
+    },
+    {
+      "rank": 9,
+      "model": "llama-3.1-8b-instant (LLM, Few-shot k=100)",
+      "selected_fold": 9,
+      "hamming_loss_mean": 0.4449093444909344,
+      "hamming_loss_std": 0.0,
+      "subset_accuracy_mean": 0.2217573221757322,
+      "subset_accuracy_std": 0.0,
+      "f1_macro_mean": 0.0,
+      "f1_macro_std": 0.0
+    }
+  ]
+}

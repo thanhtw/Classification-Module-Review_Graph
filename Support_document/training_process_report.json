@@ -1,0 +1,79 @@
+{
+  "timestamp": "2026-04-10T11:24:31.822703",
+  "cross_validation": {
+    "strategy": "Stratified K-Fold",
+    "n_folds": 10,
+    "stratification": "Stratified by all 3 labels simultaneously",
+    "random_seed": 42
+  },
+  "data_preprocessing": {
+    "steps": [
+      "Text normalization (lowercase, punctuation)",
+      "Tokenization",
+      "Stop word removal",
+      "Lemmatization/Stemming"
+    ],
+    "smote_applied": true,
+    "smote_config": {
+      "strategy": "Oversampling minority classes",
+      "k_neighbors": 5,
+      "random_state": 42
+    },
+    "train_test_split": "90% train / 10% test per fold"
+  },
+  "training_config": {
+    "ml_models": {
+      "batch_training": true,
+      "hyperparameter_tuning": "Grid Search",
+      "cross_validation_inner": "5-fold"
+    },
+    "deep_learning": {
+      "batch_size": 32,
+      "epochs": 30,
+      "optimizer": "Adam",
+      "learning_rate": 0.001,
+      "early_stopping": true,
+      "patience": 3,
+      "validation_split": 0.1
+    },
+    "transformers": {
+      "batch_size": 8,
+      "epochs": 30,
+      "optimizer": "AdamW",
+      "learning_rate": 2e-05,
+      "warmup_steps": 100,
+      "max_grad_norm": 1.0
+    },
+    "llm": {
+      "inference_type": "API-based (Groq)",
+      "batch_size": 1,
+      "temperature": 0.0,
+      "max_tokens": 128,
+      "prompt_engineering": "Structured JSON format with task-specific instructions"
+    }
+  },
+  "metrics": {
+    "evaluation_metrics": [
+      "Accuracy (Micro & Macro)",
+      "Precision (Micro & Macro)",
+      "Recall (Micro & Macro)",
+      "F1-Score (Micro & Macro)",
+      "Hamming Loss",
+      "Subset Accuracy"
+    ],
+    "multilabel_handling": "Multilabel metrics for 3 independent binary labels",
+    "statistical_significance": "Reported as mean \u00b1 std across 10 folds"
+  },
+  "computational_resources": {
+    "gpu": "NVIDIA RTX 4080 SUPER (15.69 GB VRAM)",
+    "cpu": "Intel Xeon",
+    "python_version": "3.11",
+    "framework_versions": {
+      "torch": "2.x",
+      "transformers": "4.x",
+      "scikit-learn": "1.x",
+      "pandas": "2.x",
+      "numpy": "1.x"
+    }
+  }
+}

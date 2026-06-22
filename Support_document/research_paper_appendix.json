@@ -1,0 +1,243 @@
+{
+  "title": "Complete Research Paper Appendix",
+  "timestamp": "2026-04-10T11:24:31.822810",
+  "sections": {
+    "dataset": {
+      "timestamp": "2026-04-10T11:24:31.822000",
+      "dataset_basic": {
+        "total_samples": 2398,
+        "number_of_labels": 3,
+        "label_names": [
+          "relevance",
+          "concreteness",
+          "constructive"
+        ],
+        "data_source": "data/cleaned_3label_data.csv"
+      },
+      "text_statistics": {
+        "avg_length_chars": 24.68723936613845,
+        "std_length_chars": 52.02843093925749,
+        "min_length_chars": 1,
+        "max_length_chars": 1497,
+        "avg_tokens": 2.3373644703919934,
+        "std_tokens": 4.891056440192494,
+        "min_tokens": 1,
+        "max_tokens": 129
+      },
+      "label_statistics": {
+        "relevance": {
+          "positive": 1868,
+          "negative": 530,
+          "positive_ratio": 0.7789824854045038
+        },
+        "concreteness": {
+          "positive": 1099,
+          "negative": 1299,
+          "positive_ratio": 0.45829858215179314
+        },
+        "constructive": {
+          "positive": 233,
+          "negative": 2165,
+          "positive_ratio": 0.09716430358632193
+        }
+      },
+      "label_combinations": {
+        "total_unique_combinations": 5,
+        "combination_distribution": {
+          "110": 899,
+          "100": 736,
+          "000": 530,
+          "111": 200,
+          "101": 33
+        }
+      }
+    },
+    "models": {
+      "timestamp": "2026-04-10T11:24:31.822544",
+      "models": {
+        "linear_svm": {
+          "category": "Traditional ML",
+          "description": "Linear Support Vector Machine",
+          "embeddings": "Word2Vec (300-dim)",
+          "hyperparameters": {
+            "C": 1.0,
+            "kernel": "linear",
+            "max_iter": 1000
+          },
+          "parameters": "~300 \u00d7 output_dim"
+        },
+        "logistic_regression": {
+          "category": "Traditional ML",
+          "description": "Logistic Regression Classifier",
+          "embeddings": "Word2Vec (300-dim)",
+          "hyperparameters": {
+            "C": 1.0,
+            "max_iter": 1000
+          },
+          "parameters": "~300 \u00d7 output_dim"
+        },
+        "naive_bayes": {
+          "category": "Traditional ML",
+          "description": "Gaussian Naive Bayes",
+          "embeddings": "Word2Vec (300-dim)",
+          "hyperparameters": {
+            "var_smoothing": 1e-09
+          },
+          "parameters": "~300 \u00d7 output_dim"
+        },
+        "lstm": {
+          "category": "Deep Learning",
+          "description": "LSTM with Dropout",
+          "architecture": "Embedding \u2192 LSTM \u2192 Dense",
+          "embeddings": "GloVe (300-dim)",
+          "hyperparameters": {
+            "hidden_dim": 128,
+            "dropout": 0.5,
+            "epochs": 30
+          },
+          "parameters": "~200K"
+        },
+        "bilstm": {
+          "category": "Deep Learning",
+          "description": "Bidirectional LSTM with Dropout",
+          "architecture": "Embedding \u2192 BiLSTM \u2192 Dense",
+          "embeddings": "GloVe (300-dim)",
+          "hyperparameters": {
+            "hidden_dim": 128,
+            "dropout": 0.5,
+            "epochs": 30
+          },
+          "parameters": "~400K"
+        },
+        "bert": {
+          "category": "Transformer",
+          "description": "BERT (Multilingual, Base)",
+          "model_id": "bert-base-multilingual-cased",
+          "hyperparameters": {
+            "max_length": 128,
+            "learning_rate": 2e-05,
+            "epochs": 30
+          },
+          "parameters": "~110M",
+          "vocab_size": 119547
+        },
+        "roberta": {
+          "category": "Transformer",
+          "description": "RoBERTa (Base)",
+          "model_id": "roberta-base",
+          "hyperparameters": {
+            "max_length": 128,
+            "learning_rate": 2e-05,
+            "epochs": 30
+          },
+          "parameters": "~125M",
+          "vocab_size": 50265
+        },
+        "llm_zero_shot": {
+          "category": "LLM (Groq API)",
+          "description": "Llama 3.1 8B - Zero-shot Classification",
+          "model_id": "llama-3.1-8b-instant",
+          "inference_type": "Groq Cloud",
+          "hyperparameters": {
+            "temperature": 0.0,
+            "max_tokens": 128,
+            "prompt_format": "JSON"
+          },
+          "parameters": "8B"
+        },
+        "llm_few_shot": {
+          "category": "LLM (Groq API)",
+          "description": "Llama 3.1 8B - Few-shot Classification (k=100)",
+          "model_id": "llama-3.1-8b-instant",
+          "inference_type": "Groq Cloud",
+          "hyperparameters": {
+            "temperature": 0.0,
+            "max_tokens": 128,
+            "few_shot_k": 100,
+            "prompt_format": "JSON"
+          },
+          "parameters": "8B"
+        }
+      }
+    },
+    "training": {
+      "timestamp": "2026-04-10T11:24:31.822703",
+      "cross_validation": {
+        "strategy": "Stratified K-Fold",
+        "n_folds": 10,
+        "stratification": "Stratified by all 3 labels simultaneously",
+        "random_seed": 42
+      },
+      "data_preprocessing": {
+        "steps": [
+          "Text normalization (lowercase, punctuation)",
+          "Tokenization",
+          "Stop word removal",
+          "Lemmatization/Stemming"
+        ],
+        "smote_applied": true,
+        "smote_config": {
+          "strategy": "Oversampling minority classes",
+          "k_neighbors": 5,
+          "random_state": 42
+        },
+        "train_test_split": "90% train / 10% test per fold"
+      },
+      "training_config": {
+        "ml_models": {
+          "batch_training": true,
+          "hyperparameter_tuning": "Grid Search",
+          "cross_validation_inner": "5-fold"
+        },
+        "deep_learning": {
+          "batch_size": 32,
+          "epochs": 30,
+          "optimizer": "Adam",
+          "learning_rate": 0.001,
+          "early_stopping": true,
+          "patience": 3,
+          "validation_split": 0.1
+        },
+        "transformers": {
+          "batch_size": 8,
+          "epochs": 30,
+          "optimizer": "AdamW",
+          "learning_rate": 2e-05,
+          "warmup_steps": 100,
+          "max_grad_norm": 1.0
+        },
+        "llm": {
+          "inference_type": "API-based (Groq)",
+          "batch_size": 1,
+          "temperature": 0.0,
+          "max_tokens": 128,
+          "prompt_engineering": "Structured JSON format with task-specific instructions"
+        }
+      },
+      "metrics": {
+        "evaluation_metrics": [
+          "Accuracy (Micro & Macro)",
+          "Precision (Micro & Macro)",
+          "Recall (Micro & Macro)",
+          "F1-Score (Micro & Macro)",
+          "Hamming Loss",
+          "Subset Accuracy"
+        ],
+        "multilabel_handling": "Multilabel metrics for 3 independent binary labels",
+        "statistical_significance": "Reported as mean \u00b1 std across 10 folds"
+      },
+      "computational_resources": {
+        "gpu": "NVIDIA RTX 4080 SUPER (15.69 GB VRAM)",
+        "cpu": "Intel Xeon",
+        "python_version": "3.11",
+        "framework_versions": {
+          "torch": "2.x",
+          "transformers": "4.x",
+          "scikit-learn": "1.x",
+          "pandas": "2.x",
+          "numpy": "1.x"
+        }
+      }
+    }
+  }
+}

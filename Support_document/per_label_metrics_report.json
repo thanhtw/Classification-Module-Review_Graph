@@ -1,0 +1,295 @@
+{
+  "timestamp": "2026-05-28T10:58:02.509201",
+  "labels": [
+    "relevance",
+    "concreteness",
+    "constructive"
+  ],
+  "label_descriptions": {
+    "relevance": "Relevance - Is the text relevant to the topic?",
+    "concreteness": "Concreteness - Does the text contain concrete examples?",
+    "constructive": "Constructive - Is the text constructive/helpful?"
+  },
+  "note": "Per-label metrics are computed from predictions/labels of selected best fold when artifacts exist.",
+  "models": {
+    "Linear SVM": {
+      "relevance": {
+        "precision": 0.9276,
+        "precision_std": 0.0,
+        "recall": 0.754,
+        "recall_std": 0.0,
+        "f1": 0.8319,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "concreteness": {
+        "precision": 0.7299,
+        "precision_std": 0.0,
+        "recall": 0.9091,
+        "recall_std": 0.0,
+        "f1": 0.8097,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "constructive": {
+        "precision": 0.146,
+        "precision_std": 0.0,
+        "recall": 0.8696,
+        "recall_std": 0.0,
+        "f1": 0.25,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "selected_fold": 1,
+      "artifact_dir": "results/modular_multimodel/model_artifacts/linear_svm/fold_1"
+    },
+    "Logistic Regression": {
+      "relevance": {
+        "precision": 0.9338,
+        "precision_std": 0.0,
+        "recall": 0.6791,
+        "recall_std": 0.0,
+        "f1": 0.7864,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "concreteness": {
+        "precision": 0.6966,
+        "precision_std": 0.0,
+        "recall": 0.9182,
+        "recall_std": 0.0,
+        "f1": 0.7922,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "constructive": {
+        "precision": 0.1439,
+        "precision_std": 0.0,
+        "recall": 0.8696,
+        "recall_std": 0.0,
+        "f1": 0.2469,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "selected_fold": 1,
+      "artifact_dir": "results/modular_multimodel/model_artifacts/logistic_regression/fold_1"
+    },
+    "Naive Bayes": {
+      "relevance": {
+        "precision": 0.8621,
+        "precision_std": 0.0,
+        "recall": 0.8065,
+        "recall_std": 0.0,
+        "f1": 0.8333,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "concreteness": {
+        "precision": 0.5944,
+        "precision_std": 0.0,
+        "recall": 0.9727,
+        "recall_std": 0.0,
+        "f1": 0.7379,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "constructive": {
+        "precision": 0.0955,
+        "precision_std": 0.0,
+        "recall": 0.7391,
+        "recall_std": 0.0,
+        "f1": 0.1692,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "selected_fold": 10,
+      "artifact_dir": "results/modular_multimodel/model_artifacts/naive_bayes/fold_10"
+    },
+    "LSTM": {
+      "relevance": {
+        "precision": 0.7792,
+        "precision_std": 0.0,
+        "recall": 1.0,
+        "recall_std": 0.0,
+        "f1": 0.8759,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "concreteness": {
+        "precision": 0.8241,
+        "precision_std": 0.0,
+        "recall": 0.8091,
+        "recall_std": 0.0,
+        "f1": 0.8165,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "constructive": {
+        "precision": 0.5263,
+        "precision_std": 0.0,
+        "recall": 0.4348,
+        "recall_std": 0.0,
+        "f1": 0.4762,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "selected_fold": 3,
+      "artifact_dir": "results/modular_multimodel/model_artifacts/lstm/fold_3"
+    },
+    "BiLSTM": {
+      "relevance": {
+        "precision": 0.7792,
+        "precision_std": 0.0,
+        "recall": 1.0,
+        "recall_std": 0.0,
+        "f1": 0.8759,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "concreteness": {
+        "precision": 0.76,
+        "precision_std": 0.0,
+        "recall": 0.8636,
+        "recall_std": 0.0,
+        "f1": 0.8085,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "constructive": {
+        "precision": 0.4359,
+        "precision_std": 0.0,
+        "recall": 0.7391,
+        "recall_std": 0.0,
+        "f1": 0.5484,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "selected_fold": 6,
+      "artifact_dir": "results/modular_multimodel/model_artifacts/bilstm/fold_6"
+    },
+    "BERT": {
+      "relevance": {
+        "precision": 0.9677,
+        "precision_std": 0.0,
+        "recall": 0.9677,
+        "recall_std": 0.0,
+        "f1": 0.9677,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "concreteness": {
+        "precision": 0.8264,
+        "precision_std": 0.0,
+        "recall": 0.9091,
+        "recall_std": 0.0,
+        "f1": 0.8658,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "constructive": {
+        "precision": 0.8182,
+        "precision_std": 0.0,
+        "recall": 0.7826,
+        "recall_std": 0.0,
+        "f1": 0.8,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "selected_fold": 10,
+      "artifact_dir": "results/modular_multimodel/model_artifacts/bert/fold_10"
+    },
+    "RoBERTa": {
+      "relevance": {
+        "precision": 0.9526,
+        "precision_std": 0.0,
+        "recall": 0.9731,
+        "recall_std": 0.0,
+        "f1": 0.9628,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "concreteness": {
+        "precision": 0.8306,
+        "precision_std": 0.0,
+        "recall": 0.9364,
+        "recall_std": 0.0,
+        "f1": 0.8803,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "constructive": {
+        "precision": 0.6786,
+        "precision_std": 0.0,
+        "recall": 0.8261,
+        "recall_std": 0.0,
+        "f1": 0.7451,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "selected_fold": 10,
+      "artifact_dir": "results/modular_multimodel/model_artifacts/roberta/fold_10"
+    },
+    "llama-3.1-8b-instant (LLM, Zero-shot)": {
+      "relevance": {
+        "precision": 0.0,
+        "precision_std": 0.0,
+        "recall": 0.0,
+        "recall_std": 0.0,
+        "f1": 0.0,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "concreteness": {
+        "precision": 0.0,
+        "precision_std": 0.0,
+        "recall": 0.0,
+        "recall_std": 0.0,
+        "f1": 0.0,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "constructive": {
+        "precision": 0.0,
+        "precision_std": 0.0,
+        "recall": 0.0,
+        "recall_std": 0.0,
+        "f1": 0.0,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "selected_fold": 9,
+      "artifact_dir": "results/modular_multimodel/model_artifacts/llm_zero_shot/fold_9"
+    },
+    "llama-3.1-8b-instant (LLM, Few-shot k=100)": {
+      "relevance": {
+        "precision": 0.0,
+        "precision_std": 0.0,
+        "recall": 0.0,
+        "recall_std": 0.0,
+        "f1": 0.0,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "concreteness": {
+        "precision": 0.0,
+        "precision_std": 0.0,
+        "recall": 0.0,
+        "recall_std": 0.0,
+        "f1": 0.0,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "constructive": {
+        "precision": 0.0,
+        "precision_std": 0.0,
+        "recall": 0.0,
+        "recall_std": 0.0,
+        "f1": 0.0,
+        "f1_std": 0.0,
+        "note": "Computed from selected best-fold predictions/labels"
+      },
+      "selected_fold": 9,
+      "artifact_dir": "results/modular_multimodel/model_artifacts/llm_few_shot/fold_9"
+    }
+  }
+}

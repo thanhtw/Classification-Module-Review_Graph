@@ -5,8 +5,8 @@ from typing import Dict, Sequence, Tuple
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
-from transformers import AutoModelForSequenceClassification, AutoTokenizer, Trainer, TrainingArguments
+from torch.utils.data import DataLoader, Dataset
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from src.training.config import TransformerConfig
 from src.utils.metrics import apply_per_label_thresholds, compute_metrics, tune_per_label_thresholds
@@ -30,65 +30,31 @@ class HFDataset(Dataset):
         }
 
 
-class WeightedBCETrainer(Trainer):
-    def __init__(self, pos_weight: torch.Tensor, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.pos_weight = pos_weight
-
-    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        labels = inputs.pop("labels")
-        outputs = model(**inputs)
-        logits = outputs.logits
-        loss = torch.nn.functional.binary_cross_entropy_with_logits(
-            logits,
-            labels,
-            pos_weight=self.pos_weight.to(logits.device),
-        )
-        return (loss, outputs) if return_outputs else loss
-
-
-def _extract_logits(pred_output) -> np.ndarray:
-    logits = pred_output.predictions
-    if isinstance(logits, tuple):
-        logits = logits[0]
-    return np.asarray(logits)
-
-
-def _build_transformer_training_history(log_history: list, final_metrics: Dict[str, float]) -> Dict[str, object]:
-    """Build an epoch-oriented history payload from Hugging Face trainer logs."""
-    train_loss = []
-    val_loss = []
-    epochs = []
-
-    for item in log_history:
-        if not isinstance(item, dict):
-            continue
-        if "epoch" in item and "loss" in item:
-            epochs.append(float(item["epoch"]))
-            train_loss.append(float(item["loss"]))
-        if "eval_loss" in item:
-            val_loss.append(float(item["eval_loss"]))
-
-    # Keep aligned lengths for plotting convenience.
-    if len(val_loss) < len(train_loss):
-        if val_loss:
-            val_loss.extend([val_loss[-1]] * (len(train_loss) - len(val_loss)))
-        else:
-            proxy = float(max(0.0, 1.0 - final_metrics.get("f1_macro", 0.0)))
-            val_loss = [proxy] * len(train_loss)
-
+def _build_transformer_training_history(
+    epochs: list[float],
+    train_loss: list[float],
+    val_loss: list[float],
+    final_metrics: Dict[str, float],
+) -> Dict[str, object]:
+    """Build an epoch-oriented history payload from manual training loops."""
     if not train_loss:
         proxy = float(max(0.0, 1.0 - final_metrics.get("f1_macro", 0.0)))
         train_loss = [proxy]
         val_loss = [proxy]
         epochs = [1.0]
 
+    if len(val_loss) < len(train_loss):
+        if val_loss:
+            val_loss.extend([val_loss[-1]] * (len(train_loss) - len(val_loss)))
+        else:
+            val_loss = [train_loss[-1]] * len(train_loss)
+
     f1_macro = float(final_metrics.get("f1_macro", 0.0))
     f1_micro = float(final_metrics.get("f1_micro", f1_macro))
     n = len(train_loss)
 
     return {
-        "history_type": "epoch_logs_from_trainer",
+        "history_type": "manual_epoch_loop",
         "epochs": epochs,
         "train_loss": train_loss,
         "val_loss": val_loss[:n],
@@ -96,8 +62,47 @@ def _build_transformer_training_history(log_history: list, final_metrics: Dict[s
         "val_f1_macro": [f1_macro] * n,
         "train_f1_micro": [f1_micro] * n,
         "val_f1_micro": [f1_micro] * n,
-        "note": "Loss curves are epoch logs; F1 values are final fold metrics repeated per epoch.",
+        "note": "Loss curves are from the manual epoch loop; F1 values are final fold metrics repeated per epoch.",
     }
+
+
+def _move_batch_to_device(batch: Dict[str, torch.Tensor], device: torch.device) -> Dict[str, torch.Tensor]:
+    return {k: v.to(device) for k, v in batch.items()}
+
+
+def _run_eval_loss(
+    model: torch.nn.Module,
+    dataloader: DataLoader,
+    loss_fn: torch.nn.Module,
+    device: torch.device,
+) -> float:
+    model.eval()
+    losses = []
+    with torch.no_grad():
+        for batch in dataloader:
+            batch = _move_batch_to_device(batch, device)
+            labels = batch["labels"]
+            outputs = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
+            loss = loss_fn(outputs.logits, labels)
+            losses.append(float(loss.detach().cpu()))
+    return float(np.mean(losses)) if losses else 0.0
+
+
+def _predict_logits(
+    model: torch.nn.Module,
+    dataloader: DataLoader,
+    device: torch.device,
+) -> np.ndarray:
+    model.eval()
+    logits_chunks = []
+    with torch.no_grad():
+        for batch in dataloader:
+            batch = _move_batch_to_device(batch, device)
+            outputs = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
+            logits_chunks.append(outputs.logits.detach().cpu().numpy())
+    if not logits_chunks:
+        return np.zeros((0, 0), dtype=np.float32)
+    return np.concatenate(logits_chunks, axis=0)
 
 
 def run_transformer(
@@ -155,54 +160,53 @@ def run_transformer(
     pos = y_train_res[tr_idx].sum(axis=0)
     neg = len(y_train_res[tr_idx]) - pos
     pos_weight = torch.FloatTensor((neg / (pos + 1e-6)).astype(np.float32))
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
 
-    args = TrainingArguments(
-        output_dir=output_dir,
-        learning_rate=cfg.lr,
-        per_device_train_batch_size=cfg.batch_size,
-        per_device_eval_batch_size=cfg.batch_size,
-        num_train_epochs=cfg.epochs,
-        weight_decay=cfg.weight_decay,
-        evaluation_strategy="epoch",
-        logging_strategy="epoch",
-        save_strategy="no",
-        report_to="none",
-        disable_tqdm=False,
-        dataloader_pin_memory=False,
-        use_cpu=not torch.cuda.is_available(),
-        fp16=torch.cuda.is_available(),
-    )
-
-    trainer = WeightedBCETrainer(
-        pos_weight=pos_weight,
-        model=model,
-        args=args,
-        train_dataset=ds_train,
-        eval_dataset=ds_val,
-    )
+    train_loader = DataLoader(ds_train, batch_size=cfg.batch_size, shuffle=True, pin_memory=False)
+    val_loader = DataLoader(ds_val, batch_size=cfg.batch_size, shuffle=False, pin_memory=False)
+    test_loader = DataLoader(ds_test, batch_size=cfg.batch_size, shuffle=False, pin_memory=False)
+    loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(device))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    epoch_ids: list[float] = []
+    train_loss_history: list[float] = []
+    val_loss_history: list[float] = []
 
     tr_start = time.perf_counter()
-    trainer.train()
+    for epoch in range(int(cfg.epochs)):
+        model.train()
+        batch_losses = []
+        for batch in train_loader:
+            batch = _move_batch_to_device(batch, device)
+            labels = batch["labels"]
+            optimizer.zero_grad()
+            outputs = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
+            loss = loss_fn(outputs.logits, labels)
+            loss.backward()
+            optimizer.step()
+            batch_losses.append(float(loss.detach().cpu()))
+
+        epoch_ids.append(float(epoch + 1))
+        train_loss_history.append(float(np.mean(batch_losses)) if batch_losses else 0.0)
+        val_loss_history.append(_run_eval_loss(model, val_loader, loss_fn, device))
     train_time = time.perf_counter() - tr_start
 
-    val_pred_out = trainer.predict(ds_val)
-    val_logits = _extract_logits(val_pred_out)
+    val_logits = _predict_logits(model, val_loader, device)
     val_probs = 1 / (1 + np.exp(-val_logits))
     tuned_thresholds = tune_per_label_thresholds(y_train_res[va_idx].astype(int), val_probs)
 
     inf_start = time.perf_counter()
-    pred_out = trainer.predict(ds_test)
+    logits = _predict_logits(model, test_loader, device)
     infer_time = time.perf_counter() - inf_start
 
-    logits = _extract_logits(pred_out)
     probs = 1 / (1 + np.exp(-logits))
     preds = apply_per_label_thresholds(probs, tuned_thresholds)
     metrics = compute_metrics(test_labels, preds)
-    training_history = _build_transformer_training_history(trainer.state.log_history, metrics)
+    training_history = _build_transformer_training_history(epoch_ids, train_loss_history, val_loss_history, metrics)
 
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)
-        trainer.save_model(save_dir)
+        model.save_pretrained(save_dir)
         tokenizer.save_pretrained(save_dir)
         
         # Save predictions and labels for confusion matrix calculation

@@ -9,6 +9,7 @@ from .report_builders import (
 
 from .metrics_analysis import (
     calculate_per_label_metrics,
+    generate_fold_level_per_label_report,
     aggregate_per_label_metrics_across_folds,
     extract_per_label_metrics_from_results,
     generate_per_label_metrics_report,
@@ -36,6 +37,7 @@ __all__ = [
     "generate_research_paper_appendix",
     # Metrics analysis
     "calculate_per_label_metrics",
+    "generate_fold_level_per_label_report",
     "aggregate_per_label_metrics_across_folds",
     "extract_per_label_metrics_from_results",
     "generate_per_label_metrics_report",

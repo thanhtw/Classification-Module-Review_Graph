@@ -27,8 +27,8 @@ def _thousands_formatter(x, _):
 def _short_model_name(name: str) -> str:
     """Normalize long model names for cleaner figure labels."""
     aliases = {
-        "llama-3.1-8b-instant (LLM, Zero-shot)": "LLM Zero-shot",
-        "llama-3.1-8b-instant (LLM, Few-shot k=100)": "LLM Few-shot",
+        "gpt-5.2-codex (LLM, Zero-shot)": "LLM Zero-shot",
+        "gpt-5.2-codex (LLM, Few-shot k=10)": "LLM Few-shot",
         "Linear SVM": "Linear SVM",
         "Logistic Regression": "Logistic Reg.",
         "Naive Bayes": "Naive Bayes",
@@ -53,8 +53,8 @@ def _load_best_fold_map() -> dict:
         "bilstm": "bilstm",
         "bert": "bert",
         "roberta": "roberta",
-        "llama-3.1-8b-instant (llm, zero-shot)": "llm_zero_shot",
-        "llama-3.1-8b-instant (llm, few-shot k=100)": "llm_few_shot",
+        "gpt-5.2-codex (llm, zero-shot)": "llm_zero_shot",
+        "gpt-5.2-codex (llm, few-shot k=10)": "llm_few_shot",
     }
 
     candidate_csvs = [

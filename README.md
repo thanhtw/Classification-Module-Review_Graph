@@ -81,7 +81,7 @@ python scripts/research_comparison.py --n_folds 10 --seed 42
 ```
 
 This will:
-1. Train/evaluate models one-by-one through scripts/train.py.
+1. Train/evaluate all configured models through scripts/train.py in one run.
 2. Select the best fold per model (priority: f1_macro, then f1_micro, then subset_accuracy).
 3. Export best-fold feature split files.
 4. Generate publication-style figures and metric reports.
@@ -113,6 +113,10 @@ Research outputs (results/research_comparison):
 - comprehensive_model_comparison.tex
 - per_label_metrics_report.json
 - per_label_metrics_report.txt
+- all_models_per_label_all_folds.csv
+- all_models_per_label_summary.csv
+- all_models_per_label_report.json
+- all_models_per_label_report.txt
 - multilabel_metrics_report.json
 - model_configurations.json
 - training_process_report.json
@@ -130,7 +134,7 @@ Best-fold feature split exports:
   - linear_svm
   - logistic_regression
   - naive_bayes
-- LLM models run via Groq API (llama-3.1-8b-instant).
+- LLM models run via the OpenAI API using strict JSON schema output (`gpt-5.2-codex`).
 - Research visualizations consume best-fold mappings from comparison artifacts when available.
 
 ## Useful Commands
@@ -147,6 +151,12 @@ Open a figure on Linux:
 
 ```bash
 xdg-open results/research_comparison/model_multilabel_metrics.png
+```
+
+Generate fold-level per-label CSVs for the LLM runs:
+
+```bash
+python scripts/generate_llm_per_label_report.py
 ```
 
 ## Documentation

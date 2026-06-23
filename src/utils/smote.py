@@ -5,7 +5,7 @@ import numpy as np
 try:
     from imblearn.over_sampling import RandomOverSampler
     from imblearn.over_sampling import SMOTE
-except ModuleNotFoundError:
+except ImportError:
     SMOTE = None
     RandomOverSampler = None
 
@@ -25,6 +25,30 @@ def decode_combos(combo_labels: np.ndarray, n_labels: int) -> np.ndarray:
     return out
 
 
+def _random_oversample_fallback(
+    x: np.ndarray,
+    y_label_col: np.ndarray,
+    seed: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Simple random oversampling fallback when imbalanced-learn is unavailable."""
+    rng = np.random.default_rng(seed)
+    classes, counts = np.unique(y_label_col, return_counts=True)
+    if len(classes) < 2:
+        return x.copy(), y_label_col.copy()
+
+    max_count = int(counts.max())
+    sampled_indices = []
+    for klass, count in zip(classes, counts):
+        klass_idx = np.where(y_label_col == klass)[0]
+        sampled_indices.extend(klass_idx.tolist())
+        deficit = max_count - int(count)
+        if deficit > 0:
+            sampled_indices.extend(rng.choice(klass_idx, size=deficit, replace=True).tolist())
+
+    sampled_indices = np.asarray(sampled_indices, dtype=np.int64)
+    return x[sampled_indices], y_label_col[sampled_indices]
+
+
 def apply_smote_multilabel(
     x: np.ndarray,
     y: np.ndarray,
@@ -42,7 +66,6 @@ def apply_smote_multilabel(
     This is the standard multilabel-aware approach used in practice.
     """
 
-    from imblearn.over_sampling import RandomOverSampler
     n_samples, n_labels = y.shape
     rng = np.random.default_rng(seed)
 
@@ -52,8 +75,11 @@ def apply_smote_multilabel(
 
     for label_idx in range(n_labels):
         y_label_col = y[:, label_idx]
-        ros = RandomOverSampler(random_state=seed + label_idx)
-        x_res, y_label_res = ros.fit_resample(x, y_label_col)
+        if RandomOverSampler is not None:
+            ros = RandomOverSampler(random_state=seed + label_idx)
+            x_res, y_label_res = ros.fit_resample(x, y_label_col)
+        else:
+            x_res, y_label_res = _random_oversample_fallback(x, y_label_col, seed + label_idx)
         n_new = len(x_res) - len(x)
         if n_new > 0:
             x_new = x_res[-n_new:]
@@ -126,6 +152,7 @@ def apply_smote_multilabel(
         "n_before": int(len(y)),
         "n_after": int(len(y_resampled)),
         "method": "multilabel_oversampling_per_label",
+        "backend": "imblearn_random_oversampler" if RandomOverSampler is not None else "numpy_fallback_random_oversampler",
         "label_pos_before": pos_before,
         "label_neg_before": neg_before,
         "label_pos_after": pos_after,

@@ -26,6 +26,7 @@ from src.training.config import (
     TransformerConfig,
     get_env_float,
     get_env_int,
+    get_env_str,
     load_env_file,
 )
 from src.data.preprocessor import load_and_clean_data, set_seed
@@ -34,8 +35,8 @@ try:
 except ModuleNotFoundError as e:
     run_llm_zero_few_shot = None
     # Optionally print a warning, but do not break ML-only workflows
-    if 'groq' in str(e):
-        print("[WARN] groq module not found: LLM functionality will be unavailable. ML/SMOTE tests are unaffected.")
+    if 'openai' in str(e):
+        print("[WARN] openai module not found: LLM functionality will be unavailable. ML/SMOTE tests are unaffected.")
     else:
         raise
 from src.models.models_nn import run_lstm_like
@@ -84,11 +85,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--llm_model_name",
         type=str,
-        default="llama-3.1-8b-instant",
-        choices=["llama-3.1-8b-instant"],
-        help="Groq API model name for llm_zero_shot/llm_few_shot",
+        default=get_env_str("OPENAI_LLM_MODEL_NAME", "gpt-5.2-codex"),
+        help="OpenAI model name for llm_zero_shot/llm_few_shot",
     )
-    parser.add_argument("--llm_few_shot_k", type=int, default=100, help="Number of few-shot examples to include in each prompt")
+    parser.add_argument("--llm_few_shot_k", type=int, default=10, help="Number of few-shot examples to include in each prompt")
     parser.add_argument("--llm_max_new_tokens", type=int, default=64, help="Maximum generated tokens for LLM responses")
     parser.add_argument("--llm_temperature", type=float, default=0.0, help="Sampling temperature for LLM decoding")
     return parser.parse_args()
@@ -168,6 +168,11 @@ def main() -> None:
         raise ValueError(
             "No model supported by this runner was selected. "
             "Use --models with any of: bert roberta linear_svm naive_bayes logistic_regression lstm bilstm llm_zero_shot llm_few_shot"
+        )
+    if any(m in {"llm_zero_shot", "llm_few_shot"} for m in models_to_run) and run_llm_zero_few_shot is None:
+        raise ModuleNotFoundError(
+            "LLM models were requested, but the OpenAI dependency is unavailable. "
+            "Install the `openai` package before running llm_zero_shot or llm_few_shot."
         )
 
     common = CommonConfig(seed=args.seed, test_size=args.test_size, use_smote=(not args.no_smote), output_dir=args.output_dir)

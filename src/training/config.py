@@ -53,10 +53,10 @@ class TransformerConfig:
 
 @dataclass
 class LLMConfig:
-    model_name: str = "llama-3.1-8b-instant"  # Faster, smaller model with good JSON support
+    model_name: str = "gpt-5.2-codex"
     max_new_tokens: int = 128  # Increased for safety
     temperature: float = 0.0
-    few_shot_k: int = 100
+    few_shot_k: int = 10
 
 
 def load_env_file(env_path: str | Path = ".env") -> None:
@@ -93,3 +93,12 @@ def get_env_float(name: str, default: float) -> float:
         return float(os.getenv(name, str(default)))
     except (TypeError, ValueError):
         return default
+
+
+def get_env_str(name: str, default: str) -> str:
+    """Read string env var with fallback."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    value = value.strip()
+    return value if value else default

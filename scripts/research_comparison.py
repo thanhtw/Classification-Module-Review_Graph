@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 """
-Research Paper Comparison: LLM (Few-shot) vs Fine-tuned Transformers
-Compare llama-3.1-8b-instant LLM (via Groq API) with BERT and RoBERTa
+Research Paper Comparison: comprehensive multilabel benchmark
 
 This module orchestrates comprehensive research paper generation by importing
 specialized modules for different aspects of the comparison.
@@ -14,7 +13,6 @@ import json
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List
-from tqdm.auto import tqdm
 
 import pandas as pd
 import numpy as np
@@ -36,6 +34,7 @@ from research_modules import (
     generate_training_process_report,
     generate_research_paper_appendix,
     # Metrics analysis
+    generate_fold_level_per_label_report,
     generate_per_label_metrics_report,
     generate_multilabel_metrics_report,
     # Visualizations
@@ -47,6 +46,125 @@ from research_modules import (
     generate_comprehensive_metrics_report,
     generate_detailed_comparison_table,
 )
+
+
+MODELS_TO_COMPARE = [
+    ("Linear SVM", "linear_svm"),
+    ("Logistic Regression", "logistic_regression"),
+    ("Naive Bayes", "naive_bayes"),
+    ("LSTM", "lstm"),
+    ("BiLSTM", "bilstm"),
+    ("BERT", "bert"),
+    ("RoBERTa", "roberta"),
+    ("gpt-5.2-codex (LLM, Zero-shot)", "llm_zero_shot"),
+    ("gpt-5.2-codex (LLM, Few-shot k=10)", "llm_few_shot"),
+]
+
+MODEL_CATEGORIES = {
+    "Machine Learning": ["Linear SVM", "Logistic Regression", "Naive Bayes"],
+    "Deep Learning": ["LSTM", "BiLSTM"],
+    "Transformers": ["BERT", "RoBERTa"],
+    "LLM (OpenAI API)": ["gpt-5.2-codex (LLM, Zero-shot)", "gpt-5.2-codex (LLM, Few-shot k=10)"],
+}
+MODEL_KEY_TO_DISPLAY = {model_key: model_display for model_display, model_key in MODELS_TO_COMPARE}
+ALL_MODEL_KEYS = [model_key for _, model_key in MODELS_TO_COMPARE]
+
+
+def _run_full_training_pipeline(models_to_compare: list[tuple[str, str]], n_folds: int, seed: int) -> None:
+    """Run the training pipeline once for all requested models."""
+    cmd = [
+        sys.executable,
+        "scripts/train.py",
+        "--n_folds",
+        str(n_folds),
+        "--seed",
+        str(seed),
+        "--models",
+        *[model_key for _, model_key in models_to_compare],
+    ]
+    print("Running full project training pipeline in one pass...")
+    result = subprocess.run(cmd, cwd=project_root, timeout=36000)
+    if result.returncode != 0:
+        raise RuntimeError("Full training pipeline failed. See logs above for details.")
+
+
+def _build_best_fold_results(
+    results_df: pd.DataFrame,
+    models_to_compare: list[tuple[str, str]],
+    full_df: pd.DataFrame,
+    folds_for_export: List[Dict[str, np.ndarray]],
+) -> tuple[list[dict], list[dict], list[str]]:
+    """Build best-fold comparison rows from the unified training results."""
+    comparison_results: list[dict] = []
+    feature_split_records: list[dict] = []
+    failed_models: list[str] = []
+
+    model_col = None
+    for candidate in ["Model", "model", "model_key"]:
+        if candidate in results_df.columns:
+            model_col = candidate
+            break
+
+    if model_col is None:
+        raise ValueError("Could not find model column in model_results_detailed.csv")
+
+    feature_dir = project_root / "results" / "research_comparison" / "best_fold_feature_analysis"
+
+    for model_display_name, model_key in models_to_compare:
+        model_df = results_df[results_df[model_col] == model_key]
+        if model_df.empty:
+            failed_models.append(model_display_name)
+            continue
+
+        best_row = _select_best_fold_row(model_df)
+        best_fold = int(best_row.get("fold", best_row.get("Fold", 1)))
+
+        best_metrics = {
+            "model": model_display_name,
+            "model_key": model_key,
+            "num_folds": len(model_df),
+            "selected_fold": best_fold,
+            "selection_rule": "f1_macro > f1_micro > subset_accuracy",
+        }
+
+        numeric_cols = model_df.select_dtypes(include=["float64", "int64"]).columns
+        numeric_cols = [col for col in numeric_cols if col not in [model_col, "fold", "Fold"]]
+        for col in numeric_cols:
+            if col in best_row and pd.notna(best_row[col]):
+                best_metrics[f"{col}_mean"] = float(best_row[col])
+                best_metrics[f"{col}_std"] = 0.0
+
+        artifact_dir = str(best_row.get("artifact_dir", ""))
+        if artifact_dir:
+            best_metrics["artifact_dir"] = artifact_dir
+            best_metrics.update(_load_thresholds_for_best_fold(artifact_dir))
+
+        train_split_path, test_split_path, train_size, test_size = _export_best_fold_split_files(
+            data_df=full_df,
+            folds=folds_for_export,
+            model_key=model_key,
+            best_fold=best_fold,
+            output_dir=feature_dir,
+        )
+        best_metrics["best_fold_train_split"] = train_split_path
+        best_metrics["best_fold_test_split"] = test_split_path
+        best_metrics["best_fold_train_size"] = train_size
+        best_metrics["best_fold_test_size"] = test_size
+
+        feature_split_records.append(
+            {
+                "model": model_display_name,
+                "model_key": model_key,
+                "best_fold": best_fold,
+                "train_size": train_size,
+                "test_size": test_size,
+                "train_split_csv": train_split_path,
+                "test_split_csv": test_split_path,
+            }
+        )
+        comparison_results.append(best_metrics)
+
+    return comparison_results, feature_split_records, failed_models
 
 
 def _load_thresholds_from_artifact(artifact_dir: str) -> np.ndarray | None:
@@ -244,47 +362,33 @@ def _export_txt_report(sorted_results: list[dict], output_path: Path) -> None:
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def run_research_comparison(n_folds=10, seed=42):
+def run_research_comparison(n_folds=10, seed=42, selected_model_keys=None):
     """Run comprehensive comparison: ML → DL → Transformers → LLM, then compare all"""
+    if selected_model_keys is None:
+        selected_model_keys = list(ALL_MODEL_KEYS)
+
+    selected_model_keys = [model_key for model_key in selected_model_keys if model_key in MODEL_KEY_TO_DISPLAY]
+    if not selected_model_keys:
+        raise ValueError("No valid model keys were selected for research comparison.")
+
+    models_to_compare = [
+        (MODEL_KEY_TO_DISPLAY[model_key], model_key)
+        for model_key in selected_model_keys
+    ]
     
     print("=" * 80)
     print("COMPREHENSIVE MODEL COMPARISON: All Models vs LLM (Zero-shot & Few-shot)")
     print("=" * 80)
     print(f"\nConfiguration:")
-    print(f"  - LLM Model: llama-3.1-8b-instant (Groq API, 8B parameters)")
-    print(f"  - LLM Approaches: Zero-shot + Few-shot (k=100)")
-    print(f"  - ML Models: Linear SVM, Logistic Regression, Naive Bayes")
-    print(f"  - DL Models: LSTM, BiLSTM")
-    print(f"  - Transformers: BERT, RoBERTa")
+    print(f"  - LLM Model: gpt-5.2-codex (OpenAI API)")
+    print(f"  - LLM Approaches: Zero-shot + Few-shot (k=10)")
+    print(f"  - Selected Models: {', '.join(selected_model_keys)}")
     print(f"  - Folds: {n_folds}")
     print(f"  - Seed: {seed}")
     print(f"  - Task: Multilabel Classification (3 labels)")
     print(f"  - Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("\n" + "=" * 80 + "\n")
-    
-    # Models organized by category
-    models_to_compare = [
-        # Machine Learning Models
-        ("Linear SVM", "linear_svm"),
-        ("Logistic Regression", "logistic_regression"),
-        ("Naive Bayes", "naive_bayes"),
-        
-        # Deep Learning Models
-        ("LSTM", "lstm"),
-        ("BiLSTM", "bilstm"),
-        
-        # Transformer Models
-        ("BERT", "bert"),
-        ("RoBERTa", "roberta"),
-        
-        # LLM Models (Groq API)
-        ("llama-3.1-8b-instant (LLM, Zero-shot)", "llm_zero_shot"),
-        ("llama-3.1-8b-instant (LLM, Few-shot k=100)", "llm_few_shot"),
-    ]
-    
-    comparison_results = []
-    failed_models = []
-    feature_split_records: list[dict] = []
+
     full_df = load_and_clean_data("data/cleaned_3label_data.csv")
     all_labels = full_df[LABEL_COLUMNS].values.astype(int)
     folds_for_export = _make_folds_for_export(
@@ -294,147 +398,26 @@ def run_research_comparison(n_folds=10, seed=42):
         seed=seed,
         labels=all_labels,
     )
-    live_progress_models = {
-        "linear_svm",
-        "logistic_regression",
-        "naive_bayes",
-        "lstm",
-        "bilstm",
-        "bert",
-        "roberta",
-    }
-    
-    model_pbar = tqdm(total=len(models_to_compare), desc="Research comparison", unit="model")
-    try:
-        for idx, (model_display_name, model_key) in enumerate(models_to_compare, 1):
-            model_pbar.set_postfix(step=f"{idx}/{len(models_to_compare)}", model=model_key)
-            print(f"\n{'='*80}")
-            print(f"[{idx}/{len(models_to_compare)}] Training: {model_display_name}")
-            print(f"{'='*80}\n")
-            
-            try:
-                # Run training via train.py script
-                cmd = [
-                    sys.executable, 
-                    "scripts/train.py",
-                    f"--models={model_key}",
-                    f"--n_folds={n_folds}",
-                    f"--seed={seed}",
-                ]
-                
-                if model_key in live_progress_models:
-                    print("Live training logs enabled (epoch/fold progress)")
-                    result = subprocess.run(cmd, cwd=project_root, timeout=3600)
-                else:
-                    result = subprocess.run(cmd, cwd=project_root, capture_output=True, text=True, timeout=3600)
-                
-                if result.returncode != 0:
-                    print(f"\n✗ Error training {model_display_name}:")
-                    if result.stderr:
-                        print(result.stderr)
-                    failed_models.append(model_display_name)
-                    continue
-                
-                # Read results from the generated files
-                results_base = project_root / "results" / "modular_multimodel"
-                detailed_results = results_base / "model_results_detailed.csv"
-                
-                if detailed_results.exists():
-                    df = pd.read_csv(detailed_results)
-                    
-                    # Determine the correct column name for model
-                    model_col = None
-                    if 'Model' in df.columns:
-                        model_col = 'Model'
-                    elif 'model' in df.columns:
-                        model_col = 'model'
-                    elif 'model_key' in df.columns:
-                        model_col = 'model_key'
-                    
-                    if model_col is None:
-                        print(f"\n✗ Could not find model column in CSV for {model_display_name}")
-                        failed_models.append(model_display_name)
-                        continue
-                    
-                    # Filter for this model
-                    model_df = df[df[model_col] == model_key]
-                    
-                    if len(model_df) > 0:
-                        best_row = _select_best_fold_row(model_df)
-                        best_fold = int(best_row.get("fold", best_row.get("Fold", 1)))
+    _run_full_training_pipeline(models_to_compare=models_to_compare, n_folds=n_folds, seed=seed)
 
-                        best_metrics = {
-                            'model': model_display_name,
-                            'model_key': model_key,
-                            'num_folds': len(model_df),
-                            'selected_fold': best_fold,
-                            'selection_rule': 'f1_macro > f1_micro > subset_accuracy',
-                        }
+    results_base = project_root / "results" / "modular_multimodel"
+    detailed_results = results_base / "model_results_detailed.csv"
+    if not detailed_results.exists():
+        raise FileNotFoundError(f"Results file not found after training: {detailed_results}")
 
-                        numeric_cols = model_df.select_dtypes(include=['float64', 'int64']).columns
-                        numeric_cols = [col for col in numeric_cols if col not in [model_col, 'fold', 'Fold']]
-                        for col in numeric_cols:
-                            if col in best_row and pd.notna(best_row[col]):
-                                best_val = float(best_row[col])
-                                best_metrics[f'{col}_mean'] = best_val
-                                best_metrics[f'{col}_std'] = 0.0
+    df = pd.read_csv(detailed_results)
+    comparison_results, feature_split_records, failed_models = _build_best_fold_results(
+        results_df=df,
+        models_to_compare=models_to_compare,
+        full_df=full_df,
+        folds_for_export=folds_for_export,
+    )
 
-                        artifact_dir = str(best_row.get("artifact_dir", ""))
-                        if artifact_dir:
-                            best_metrics["artifact_dir"] = artifact_dir
-                            best_metrics.update(_load_thresholds_for_best_fold(artifact_dir))
-
-                        feature_dir = project_root / "results" / "research_comparison" / "best_fold_feature_analysis"
-                        train_split_path, test_split_path, train_size, test_size = _export_best_fold_split_files(
-                            data_df=full_df,
-                            folds=folds_for_export,
-                            model_key=model_key,
-                            best_fold=best_fold,
-                            output_dir=feature_dir,
-                        )
-                        best_metrics["best_fold_train_split"] = train_split_path
-                        best_metrics["best_fold_test_split"] = test_split_path
-                        best_metrics["best_fold_train_size"] = train_size
-                        best_metrics["best_fold_test_size"] = test_size
-
-                        feature_split_records.append(
-                            {
-                                "model": model_display_name,
-                                "model_key": model_key,
-                                "best_fold": best_fold,
-                                "train_size": train_size,
-                                "test_size": test_size,
-                                "train_split_csv": train_split_path,
-                                "test_split_csv": test_split_path,
-                            }
-                        )
-
-                        comparison_results.append(best_metrics)
-
-                        f1_macro = best_metrics.get('f1_macro_mean', best_metrics.get('f1-macro_mean', 0))
-                        print(f"\n✓ {model_display_name} Complete")
-                        print(f"  - Folds: {len(model_df)}")
-                        print(f"  - Selected best fold: {best_fold}")
-                        print(f"  - F1-macro (best fold): {f1_macro:.4f}")
-                    else:
-                        print(f"\n✗ No results found for {model_display_name} in CSV")
-                        failed_models.append(model_display_name)
-                else:
-                    print(f"\n✗ Results file not found: {detailed_results}")
-                    failed_models.append(model_display_name)
-                    
-            except subprocess.TimeoutExpired:
-                print(f"\n✗ Timeout training {model_display_name}")
-                failed_models.append(model_display_name)
-            except Exception as e:
-                print(f"\n✗ Error training {model_display_name}: {e}")
-                failed_models.append(model_display_name)
-                import traceback
-                traceback.print_exc()
-            finally:
-                model_pbar.update(1)
-    finally:
-        model_pbar.close()
+    for result in comparison_results:
+        print(f"\n✓ {result['model']} Complete")
+        print(f"  - Folds: {result.get('num_folds', 0)}")
+        print(f"  - Selected best fold: {result.get('selected_fold', 0)}")
+        print(f"  - F1-macro (best fold): {result.get('f1_macro_mean', 0.0):.4f}")
     
     # Generate comprehensive comparison report
     print("\n" + "=" * 80)
@@ -506,14 +489,7 @@ def run_research_comparison(n_folds=10, seed=42):
         print("SUMMARY BY CATEGORY")
         print("=" * 80 + "\n")
         
-        categories = {
-            'Machine Learning': ['Linear SVM', 'Logistic Regression', 'Naive Bayes'],
-            'Deep Learning': ['LSTM', 'BiLSTM'],
-            'Transformers': ['BERT', 'RoBERTa'],
-            'LLM (Groq API)': ['llama-3.1-8b-instant (LLM, Zero-shot)', 'llama-3.1-8b-instant (LLM, Few-shot k=100)'],
-        }
-        
-        for category, model_names in categories.items():
+        for category, model_names in MODEL_CATEGORIES.items():
             category_results = [r for r in sorted_results if any(name in r['model'] for name in model_names)]
             if category_results:
                 best = category_results[0]
@@ -540,6 +516,13 @@ def run_research_comparison(n_folds=10, seed=42):
         per_label_cm_dir = generate_per_label_confusion_matrices(results_dir)
         comp_csv = generate_comprehensive_metrics_report(comparison_results, results_dir)
         complete_csv, key_metrics_csv, latex_file = generate_detailed_comparison_table(comparison_results, results_dir)
+        fold_level_per_label_report = generate_fold_level_per_label_report(
+            artifact_root=results_base / "model_artifacts",
+            output_dir=results_dir,
+            model_keys=[model_key for _, model_key in models_to_compare],
+            model_display_names={model_key: model_display_name for model_display_name, model_key in models_to_compare},
+            filename_prefix="all_models_per_label",
+        )
         per_label_report = generate_per_label_metrics_report(comparison_results, results_dir)
         multilabel_report = generate_multilabel_metrics_report(comparison_results, results_dir)
         
@@ -563,6 +546,9 @@ def run_research_comparison(n_folds=10, seed=42):
         print(f"  ✓ {complete_csv}")
         print(f"  ✓ {key_metrics_csv}")
         print(f"  ✓ {latex_file}")
+        print(f"  ✓ {fold_level_per_label_report['fold_level_csv']}")
+        print(f"  ✓ {fold_level_per_label_report['summary_csv']}")
+        print(f"  ✓ {fold_level_per_label_report['report_txt']}")
         print(f"  ✓ {results_dir}/per_label_metrics_report.json")
         print(f"  ✓ {results_dir}/per_label_metrics_report.txt")
         print(f"  ✓ {results_dir}/multilabel_metrics_report.json")
@@ -579,8 +565,22 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Research paper comparison: LLM vs Fine-tuned Transformers")
     parser.add_argument("--n_folds", type=int, default=10, help="Number of cross-validation folds")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        choices=ALL_MODEL_KEYS,
+        default=None,
+        help="Optional subset of model keys to run",
+    )
+    parser.add_argument(
+        "--llm-only",
+        action="store_true",
+        help="Run only llm_zero_shot and llm_few_shot, then generate the same metrics reports",
+    )
     
     args = parser.parse_args()
+
+    selected_models = ["llm_zero_shot", "llm_few_shot"] if args.llm_only else args.models
     
     # Generate comprehensive research paper documentation
     print("\n" + "=" * 80)
@@ -591,4 +591,4 @@ if __name__ == "__main__":
     generate_research_paper_appendix(output_dir=output_dir)
     
     # Run model comparison
-    run_research_comparison(n_folds=args.n_folds, seed=args.seed)
+    run_research_comparison(n_folds=args.n_folds, seed=args.seed, selected_model_keys=selected_models)

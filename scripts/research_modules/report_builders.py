@@ -178,20 +178,20 @@ def generate_model_configurations(output_dir="results/research_comparison"):
                 "vocab_size": 50265,
             },
             "llm_zero_shot": {
-                "category": "LLM (Groq API)",
-                "description": "Llama 3.1 8B - Zero-shot Classification",
-                "model_id": "llama-3.1-8b-instant",
-                "inference_type": "Groq Cloud",
+                "category": "LLM (OpenAI API)",
+                "description": "GPT-5.2-Codex - Zero-shot Classification",
+                "model_id": "gpt-5.2-codex",
+                "inference_type": "OpenAI Chat Completions API (JSON schema)",
                 "hyperparameters": {"temperature": 0.0, "max_tokens": 128, "prompt_format": "JSON"},
-                "parameters": "8B",
+                "parameters": "API-managed",
             },
             "llm_few_shot": {
-                "category": "LLM (Groq API)",
-                "description": "Llama 3.1 8B - Few-shot Classification (k=100)",
-                "model_id": "llama-3.1-8b-instant",
-                "inference_type": "Groq Cloud",
-                "hyperparameters": {"temperature": 0.0, "max_tokens": 128, "few_shot_k": 100, "prompt_format": "JSON"},
-                "parameters": "8B",
+                "category": "LLM (OpenAI API)",
+                "description": "GPT-5.2-Codex - Few-shot Classification (k=10)",
+                "model_id": "gpt-5.2-codex",
+                "inference_type": "OpenAI Chat Completions API (JSON schema)",
+                "hyperparameters": {"temperature": 0.0, "max_tokens": 128, "few_shot_k": 10, "prompt_format": "JSON"},
+                "parameters": "API-managed",
             },
         }
     }
@@ -272,7 +272,7 @@ def generate_training_process_report(output_dir="results/research_comparison"):
                 "max_grad_norm": 1.0,
             },
             "llm": {
-                "inference_type": "API-based (Groq)",
+                "inference_type": "API-based (OpenAI Chat Completions API with JSON schema)",
                 "batch_size": 1,
                 "temperature": 0.0,
                 "max_tokens": 128,
@@ -341,7 +341,7 @@ def generate_training_process_report(output_dir="results/research_comparison"):
         f.write("\\subsection{Training Configuration}\n")
         f.write("\\textbf{Deep Learning Models:} Batch size 32, Adam optimizer (lr=0.001), early stopping with patience=3\\\\\\n")
         f.write("\\textbf{Transformers:} Batch size 8, AdamW optimizer (lr=2e-5), 3 epochs\\\\\\n")
-        f.write("\\textbf{LLM Models:} Groq API (llama-3.1-8b-instant), temperature=0.0, max tokens=128\\n\n")
+        f.write("\\textbf{LLM Models:} OpenAI Chat Completions API with JSON schema (gpt-5.2-codex), temperature=0.0, max tokens=128\\n\n")
         
         f.write("\\subsection{Evaluation Metrics}\n")
         f.write("We report both macro and micro-averaged metrics to account for multilabel classification:\n")

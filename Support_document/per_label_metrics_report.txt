@@ -17,8 +17,8 @@ Rank  | Model                                              | Fold   | Precision 
 5     | Naive Bayes                                        | 10     | 0.8621     | 0.8065     | 0.8333    
 6     | Linear SVM                                         | 1      | 0.9276     | 0.7540     | 0.8319    
 7     | Logistic Regression                                | 1      | 0.9338     | 0.6791     | 0.7864    
-8     | llama-3.1-8b-instant (LLM, Zero-shot)              | 9      | 0.0000     | 0.0000     | 0.0000    
-9     | llama-3.1-8b-instant (LLM, Few-shot k=100)         | 9      | 0.0000     | 0.0000     | 0.0000    
+8     | gpt-5.2-codex (LLM, Zero-shot)                     | 1      | 0.8709     | 0.8476     | 0.8591    
+9     | gpt-5.2-codex (LLM, Few-shot k=10)                 | 1      | 0.9084     | 0.9545     | 0.9309    
 
 CONCRETENESS (Concreteness - Does the text contain concrete examples?)
 ------------------------------------------------------------------------------------------------------------------------
@@ -31,8 +31,8 @@ Rank  | Model                                              | Fold   | Precision 
 5     | BiLSTM                                             | 6      | 0.7600     | 0.8636     | 0.8085    
 6     | Logistic Regression                                | 1      | 0.6966     | 0.9182     | 0.7922    
 7     | Naive Bayes                                        | 10     | 0.5944     | 0.9727     | 0.7379    
-8     | llama-3.1-8b-instant (LLM, Zero-shot)              | 9      | 0.0000     | 0.0000     | 0.0000    
-9     | llama-3.1-8b-instant (LLM, Few-shot k=100)         | 9      | 0.0000     | 0.0000     | 0.0000    
+8     | gpt-5.2-codex (LLM, Zero-shot)                     | 9      | 0.6086     | 0.9682     | 0.7474    
+9     | gpt-5.2-codex (LLM, Few-shot k=10)                 | 9      | 0.8768     | 0.8091     | 0.8416    
 
 CONSTRUCTIVE (Constructive - Is the text constructive/helpful?)
 ------------------------------------------------------------------------------------------------------------------------
@@ -45,8 +45,8 @@ Rank  | Model                                              | Fold   | Precision 
 5     | Linear SVM                                         | 1      | 0.1460     | 0.8696     | 0.2500    
 6     | Logistic Regression                                | 1      | 0.1439     | 0.8696     | 0.2469    
 7     | Naive Bayes                                        | 10     | 0.0955     | 0.7391     | 0.1692    
-8     | llama-3.1-8b-instant (LLM, Zero-shot)              | 9      | 0.0000     | 0.0000     | 0.0000    
-9     | llama-3.1-8b-instant (LLM, Few-shot k=100)         | 9      | 0.0000     | 0.0000     | 0.0000    
+8     | gpt-5.2-codex (LLM, Zero-shot)                     | 9      | 0.3030     | 0.8511     | 0.4469    
+9     | gpt-5.2-codex (LLM, Few-shot k=10)                 | 9      | 0.5270     | 0.8298     | 0.6446    
 
 MODEL SUMMARY (F1 BY LABEL)
 ------------------------------------------------------------------------------------------------------------------------
@@ -59,5 +59,5 @@ LSTM                                               | 3      | 0.8759          | 
 BiLSTM                                             | 6      | 0.8759          | 0.8085          | 0.5484         
 BERT                                               | 10     | 0.9677          | 0.8658          | 0.8000         
 RoBERTa                                            | 10     | 0.9628          | 0.8803          | 0.7451         
-llama-3.1-8b-instant (LLM, Zero-shot)              | 9      | 0.0000          | 0.0000          | 0.0000         
-llama-3.1-8b-instant (LLM, Few-shot k=100)         | 9      | 0.0000          | 0.0000          | 0.0000         
+gpt-5.2-codex (LLM, Zero-shot)                     | 9      | 0.8591          | 0.8416          | 0.6446         
+gpt-5.2-codex (LLM, Few-shot k=10)                 | 9      | 0.8591          | 0.7474          | 0.4469         

@@ -391,7 +391,7 @@ def _export_txt_report(sorted_results: list[dict], output_path: Path) -> None:
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def run_research_comparison(n_folds=10, seed=42, selected_model_keys=None):
+def run_research_comparison(n_folds=10, seed=42, selected_model_keys=None, reports_only=False):
     """Run comprehensive comparison: ML → DL → Transformers → LLM, then compare all"""
     if n_folds < 1:
         raise ValueError("n_folds must be at least 1.")
@@ -428,21 +428,54 @@ def run_research_comparison(n_folds=10, seed=42, selected_model_keys=None):
     if n_folds > len(full_df):
         raise ValueError(f"n_folds ({n_folds}) cannot exceed the number of samples ({len(full_df)}).")
     all_labels = full_df[LABEL_COLUMNS].values.astype(int)
-    folds_for_export = _make_folds_for_export(
+    protocol_holdout = _make_folds_for_export(
         n_samples=len(full_df),
-        n_folds=n_folds,
+        n_folds=1,
         test_size=0.2,
         seed=seed,
         labels=all_labels,
+    )[0]
+    development_idx = protocol_holdout["train_idx"]
+    inner_folds = _make_folds_for_export(
+        n_samples=len(development_idx),
+        n_folds=n_folds,
+        test_size=0.2,
+        seed=seed,
+        labels=all_labels[development_idx],
     )
-    _run_full_training_pipeline(models_to_compare=models_to_compare, n_folds=n_folds, seed=seed)
+    folds_for_export = [
+        {
+            "train_idx": development_idx[fold["train_idx"]],
+            "test_idx": development_idx[fold["test_idx"]],
+        }
+        for fold in inner_folds
+    ]
+    if reports_only:
+        print("Reports-only mode: using saved training results (no models will run).")
+    else:
+        _run_full_training_pipeline(models_to_compare=models_to_compare, n_folds=n_folds, seed=seed)
 
     results_base = project_root / "results" / "modular_multimodel"
     detailed_results = results_base / "model_results_detailed.csv"
     if not detailed_results.exists():
-        raise FileNotFoundError(f"Results file not found after training: {detailed_results}")
+        action = "Run the staged training commands first" if reports_only else "Training did not create results"
+        raise FileNotFoundError(f"{action}: {detailed_results}")
 
     df = pd.read_csv(detailed_results)
+    if reports_only:
+        if not {"model", "fold"}.issubset(df.columns):
+            raise ValueError(f"Saved results have no model/fold columns: {detailed_results}")
+        expected_folds = n_folds if n_folds >= 2 else 1
+        incomplete = []
+        for _, model_key in models_to_compare:
+            completed_folds = df.loc[df["model"].astype(str) == model_key, "fold"].nunique()
+            if completed_folds != expected_folds:
+                incomplete.append(f"{model_key} ({completed_folds}/{expected_folds} folds)")
+        if incomplete:
+            raise RuntimeError(
+                "Cannot create a complete comparison. Run or rerun these stages first: "
+                + ", ".join(incomplete)
+            )
     results_dir = project_root / "results" / "research_comparison"
     results_dir.mkdir(parents=True, exist_ok=True)
     statistical_report = None
@@ -625,7 +658,12 @@ if __name__ == "__main__":
     # Keep all legacy report helpers that use relative paths anchored to the repo.
     os.chdir(project_root)
     parser = argparse.ArgumentParser(description="Research paper comparison: LLM vs Fine-tuned Transformers")
-    parser.add_argument("--n_folds", type=int, default=10, help="Number of cross-validation folds")
+    parser.add_argument(
+        "--n_folds",
+        type=int,
+        default=10,
+        help="Number of cross-validation folds within the 80% development split",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument(
         "--models",
@@ -638,6 +676,11 @@ if __name__ == "__main__":
         "--llm-only",
         action="store_true",
         help="Run only llm_zero_shot and llm_few_shot, then generate the same metrics reports",
+    )
+    parser.add_argument(
+        "--reports-only",
+        action="store_true",
+        help="Generate summary/comparison from saved results without training any model",
     )
     
     args = parser.parse_args()
@@ -653,4 +696,9 @@ if __name__ == "__main__":
     generate_research_paper_appendix(output_dir=output_dir)
     
     # Run model comparison
-    run_research_comparison(n_folds=args.n_folds, seed=args.seed, selected_model_keys=selected_models)
+    run_research_comparison(
+        n_folds=args.n_folds,
+        seed=args.seed,
+        selected_model_keys=selected_models,
+        reports_only=args.reports_only,
+    )

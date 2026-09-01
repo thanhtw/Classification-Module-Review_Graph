@@ -48,7 +48,7 @@ class TransformerConfig:
     model_name: str
     local_model_path: str = ""
     max_len: int = 128
-    batch_size: int = 16
+    batch_size: int = 4
     epochs: int = 30
     lr: float = 2e-5
     weight_decay: float = 1e-3

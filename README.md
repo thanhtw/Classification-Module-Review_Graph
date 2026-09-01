@@ -59,6 +59,25 @@ python main.py llm          # OpenAI zero-shot/few-shot evaluation
 python main.py sensitivity  # 10-fold BERT resampling sensitivity
 ```
 
+For machines that cannot run every model family in one session, use staged
+runs. Each stage merges its metrics with the earlier saved stages:
+
+```bash
+python main.py ml
+# The computer can be stopped here.
+python main.py deep-learning
+# The computer can be stopped again.
+python main.py transformers
+python main.py llm --folds 10
+python main.py summary
+```
+
+`summary` never trains a model; it reads `results/modular_multimodel` and
+creates the final tables, figures, statistical analysis, and comparison. Use
+the same `--folds` and `--seed` values for every stage. A stage can safely be
+rerun: its model/fold rows replace the earlier copies rather than duplicating
+them.
+
 Running `python main.py` without a subcommand executes the complete nine-method
 research workflow with seed 42. Seven learned models are trained and tested;
 the two LLM methods perform prediction only on held-out test rows.

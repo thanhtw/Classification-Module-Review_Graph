@@ -94,15 +94,30 @@ def _export_grouped_views(df: pd.DataFrame, output_dir: str) -> None:
         fold_df.sort_values("model").to_csv(fold_dir / "all_models.csv", index=False, encoding="utf-8")
 
 
-def export_results(rows: List[Dict[str, float]], output_dir: str) -> str:
+def export_results(
+    rows: List[Dict[str, float]],
+    output_dir: str,
+    append: bool = False,
+) -> str:
     os.makedirs(output_dir, exist_ok=True)
     df = pd.DataFrame(rows)
     if df.empty:
         raise ValueError("No completed model/fold results were available to export")
+
+    # Staged runs (for example ML today and transformers tomorrow) must retain
+    # the rows produced by earlier stages. A newly produced model/fold replaces
+    # an older copy of that same model/fold, which also makes reruns safe.
+    out_csv = os.path.join(output_dir, "model_results_detailed.csv")
+    if append and os.path.exists(out_csv):
+        previous = pd.read_csv(out_csv)
+        df = pd.concat([previous, df], ignore_index=True, sort=False)
+        if {"model", "fold"}.issubset(df.columns):
+            df = df.drop_duplicates(subset=["model", "fold"], keep="last")
+        df = df.sort_values([c for c in ["model", "fold"] if c in df.columns])
+
     for row in rows:
         export_fold_result(row, output_dir)
     _export_grouped_views(df, output_dir)
-    out_csv = os.path.join(output_dir, "model_results_detailed.csv")
     df.to_csv(out_csv, index=False, encoding="utf-8")
 
     compare = (

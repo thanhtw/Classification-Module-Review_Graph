@@ -61,9 +61,19 @@ def parse_args() -> argparse.Namespace:
         choices=AVAILABLE_MODELS,
     )
     parser.add_argument("--test_size", type=float, default=0.2, help="Used only when --n_folds <= 1")
-    parser.add_argument("--n_folds", type=int, default=10, help="Number of folds for cross validation; use 1 for holdout")
+    parser.add_argument(
+        "--n_folds",
+        type=int,
+        default=10,
+        help="Number of folds within the 80% development split; use 1 to skip inner CV",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output_dir", type=str, default="results/modular_multimodel")
+    parser.add_argument(
+        "--append_results",
+        action="store_true",
+        help="Merge this run into existing results so model families can be run in separate sessions",
+    )
     parser.add_argument("--no_smote", action="store_true", help="Disable SMOTE on training split")
     parser.add_argument(
         "--smote_target_ratio",
@@ -288,20 +298,59 @@ def main() -> None:
         reasoning_effort=args.llm_reasoning_effort,
     )
 
+    # Reserve one untouched test set first. Cross-validation is performed only
+    # inside the remaining development/training portion.
+    holdout = _make_folds(len(texts), 1, common.test_size, common.seed, labels=labels)[0]
+    development_idx = holdout["train_idx"]
+    final_test_idx = holdout["test_idx"]
+    development_labels = labels[development_idx]
+    inner_folds = _make_folds(
+        len(development_idx),
+        args.n_folds,
+        common.test_size,
+        common.seed,
+        labels=development_labels,
+    )
+    folds = [
+        {
+            "train_idx": development_idx[fold["train_idx"]],
+            "test_idx": development_idx[fold["test_idx"]],
+        }
+        for fold in inner_folds
+    ]
+
     analysis_dir = os.path.join(common.output_dir, "global_train_data_analysis")
     export_train_smote_analysis(
-        train_texts=texts,
-        train_labels=df[LABEL_COLUMNS].values.astype(int),
+        train_texts=[texts[i] for i in development_idx],
+        train_labels=labels[development_idx],
         output_dir=analysis_dir,
         seed=common.seed,
         use_smote=bool(common.use_smote),
     )
-
-    folds = _make_folds(len(texts), args.n_folds, common.test_size, common.seed, labels=labels)
     _export_fold_splits(df, folds, common.output_dir)
 
+    protocol_split_dir = Path(common.output_dir) / "splits" / "final_holdout"
+    (protocol_split_dir / "train_80").mkdir(parents=True, exist_ok=True)
+    (protocol_split_dir / "test_20").mkdir(parents=True, exist_ok=True)
+    df.iloc[development_idx].to_csv(protocol_split_dir / "train_80" / "data.csv", index=True, index_label="source_index")
+    df.iloc[final_test_idx].to_csv(protocol_split_dir / "test_20" / "data.csv", index=True, index_label="source_index")
+    (protocol_split_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "train_samples": int(len(development_idx)),
+                "test_samples": int(len(final_test_idx)),
+                "test_size": float(common.test_size),
+                "inner_cv_folds": int(args.n_folds),
+                "test_set_used_during_cross_validation": False,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
     print(f"Total samples: {len(texts)}")
-    print(f"Validation mode: {'cross-validation' if args.n_folds >= 2 else 'holdout'}")
+    print(f"Protocol split: {len(development_idx)} development/train | {len(final_test_idx)} final test")
+    print(f"Validation mode: {'cross-validation within development split' if args.n_folds >= 2 else 'single development holdout'}")
     if args.n_folds >= 2:
         print(f"Folds: {args.n_folds}")
     else:
@@ -338,7 +387,14 @@ def main() -> None:
                 print(f"Running: {raw_name} | Fold {fold_id}/{len(folds)}")
                 print("=" * 60)
 
-                seed = common.seed + (models_to_run.index(raw_name) + 1) * 1000 + fold_id
+                # Keep a model's seed identical whether it is run alone, as a
+                # staged family, or in the original all-model command.
+                canonical_order = [
+                    "linear_svm", "logistic_regression", "naive_bayes",
+                    "lstm", "bilstm", "bert", "roberta",
+                    "llm_zero_shot", "llm_few_shot",
+                ]
+                seed = common.seed + (canonical_order.index(raw_name) + 1) * 1000 + fold_id
                 use_smote_for_model = bool(common.use_smote and model_name in smote_allowed_models)
                 model_artifact_dir = os.path.join(artifacts_root, model_name, f"fold_{fold_id}")
                 model_temp_dir = os.path.join(common.output_dir, "temp", model_name, f"fold_{fold_id}")
@@ -500,7 +556,7 @@ def main() -> None:
                         "infer_time_sec": float(infer_t),
                         "llm_model_name": llm_cfg.model_name if model_name in {"llm_zero_shot", "llm_few_shot"} else "",
                         "execution_type": "prediction_only" if model_name in {"llm_zero_shot", "llm_few_shot"} else "train_and_test",
-                        "prediction_scope": "held-out test fold only",
+                        "prediction_scope": "inner cross-validation validation fold only",
                         "test_results_file": test_results_file,
                         "metrics": {k: float(v) for k, v in metrics.items()},
                     }
@@ -511,7 +567,110 @@ def main() -> None:
     finally:
         overall_pbar.close()
 
-    export_results(rows, common.output_dir)
+    export_results(rows, common.output_dir, append=args.append_results)
+
+    # Retrain each model once on the complete 80% development set, then perform
+    # the only evaluation against the untouched 20% final test set.
+    final_rows: List[Dict[str, float]] = []
+    final_output_dir = os.path.join(common.output_dir, "final_test")
+    final_train_texts = [texts[i] for i in development_idx]
+    final_test_texts = [texts[i] for i in final_test_idx]
+    final_y_train = labels[development_idx]
+    final_y_test = labels[final_test_idx]
+    for raw_name in models_to_run:
+        model_name = raw_name
+        seed = common.seed + (canonical_order.index(raw_name) + 1) * 1000
+        use_smote_for_model = bool(common.use_smote and model_name in smote_allowed_models)
+        model_artifact_dir = os.path.join(final_output_dir, "model_artifacts", model_name)
+        model_temp_dir = os.path.join(final_output_dir, "temp", model_name)
+        os.makedirs(model_artifact_dir, exist_ok=True)
+        os.makedirs(model_temp_dir, exist_ok=True)
+        print(f"\nRunning final 20% holdout evaluation: {raw_name}", flush=True)
+
+        if model_name in {"bert", "roberta"}:
+            metrics, train_t, infer_t = run_transformer(
+                train_texts=final_train_texts,
+                train_labels=final_y_train,
+                test_texts=final_test_texts,
+                test_labels=final_y_test,
+                cfg=bert_cfg if model_name == "bert" else roberta_cfg,
+                seed=seed,
+                use_smote=use_smote_for_model,
+                output_dir=model_temp_dir,
+                save_dir=model_artifact_dir,
+                smote_target_ratio=args.smote_target_ratio,
+            )
+        elif model_name in {"linear_svm", "naive_bayes", "logistic_regression"}:
+            runner = {
+                "linear_svm": run_linear_svm,
+                "naive_bayes": run_naive_bayes,
+                "logistic_regression": run_logistic_regression,
+            }[model_name]
+            metrics, train_t, infer_t = runner(
+                train_texts=final_train_texts,
+                train_labels=final_y_train,
+                test_texts=final_test_texts,
+                test_labels=final_y_test,
+                use_smote=use_smote_for_model,
+                seed=seed,
+                epochs=args.ml_epochs,
+                save_dir=model_artifact_dir,
+                smote_target_ratio=args.smote_target_ratio,
+            )
+        elif model_name in {"lstm", "bilstm"}:
+            metrics, train_t, infer_t = run_lstm_like(
+                train_texts=final_train_texts,
+                train_labels=final_y_train,
+                test_texts=final_test_texts,
+                test_labels=final_y_test,
+                cfg=rnn_cfg,
+                bidirectional=model_name == "bilstm",
+                use_smote=use_smote_for_model,
+                seed=seed,
+                save_dir=model_artifact_dir,
+            )
+        elif model_name in {"llm_zero_shot", "llm_few_shot"}:
+            metrics, train_t, infer_t = run_llm_zero_few_shot(
+                train_texts=final_train_texts,
+                train_labels=final_y_train,
+                test_texts=final_test_texts,
+                test_labels=final_y_test,
+                cfg=llm_cfg,
+                mode="few_shot" if model_name == "llm_few_shot" else "zero_shot",
+                seed=seed,
+                save_dir=model_artifact_dir,
+            )
+        else:
+            raise ValueError(f"Unsupported model in final evaluation: {raw_name}")
+
+        final_predictions = np.load(os.path.join(model_artifact_dir, "predictions.npy"))
+        final_labels = np.load(os.path.join(model_artifact_dir, "labels.npy"))
+        final_results_file = export_test_predictions(
+            save_dir=model_artifact_dir,
+            model=model_name,
+            fold=0,
+            source_indices=final_test_idx,
+            texts=final_test_texts,
+            y_true=final_labels,
+            y_pred=final_predictions,
+        )
+        final_row = {
+            "model": raw_name,
+            "fold": 0,
+            "evaluation_scope": "final_20_percent_holdout",
+            "train_time_sec": float(train_t),
+            "infer_time_sec": float(infer_t),
+            "smote_train_only": int(use_smote_for_model),
+            "smote_target_ratio": float(args.smote_target_ratio) if use_smote_for_model else 0.0,
+            "artifact_dir": model_artifact_dir,
+            "temp_dir": model_temp_dir,
+            "test_results_file": final_results_file,
+        }
+        final_row.update(metrics)
+        final_rows.append(final_row)
+        print(f"Final test f1_macro={metrics['f1_macro']:.4f}", flush=True)
+
+    export_results(final_rows, final_output_dir, append=args.append_results)
 
     manifest = {
         "run": {
@@ -520,6 +679,7 @@ def main() -> None:
             "seed": int(common.seed),
             "test_size": float(common.test_size),
             "n_folds": int(args.n_folds),
+            "protocol": "80/20 final holdout with cross-validation on the 80% development split",
             "use_smote_on_training_split": bool(common.use_smote),
             "smote_target_ratio": float(args.smote_target_ratio),
             "models": list(models_to_run),
@@ -541,18 +701,37 @@ def main() -> None:
         },
         "dataset": {
             "total_samples": int(len(texts)),
+            "development_samples": int(len(development_idx)),
+            "final_test_samples": int(len(final_test_idx)),
             "folds": int(args.n_folds if args.n_folds >= 2 else 1),
         },
         "records": process_records,
     }
 
     process_json_path = os.path.join(common.output_dir, "training_process.json")
+    if args.append_results and os.path.exists(process_json_path):
+        try:
+            with open(process_json_path, "r", encoding="utf-8") as f:
+                previous_manifest = json.load(f)
+            previous_records = previous_manifest.get("records", [])
+            record_map = {
+                (str(record.get("model")), int(record.get("fold", 0))): record
+                for record in previous_records
+            }
+            for record in process_records:
+                record_map[(str(record.get("model")), int(record.get("fold", 0)))] = record
+            manifest["records"] = list(record_map.values())
+            previous_models = previous_manifest.get("run", {}).get("models", [])
+            manifest["run"]["models"] = list(dict.fromkeys([*previous_models, *models_to_run]))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            print(f"Warning: could not merge previous training manifest: {exc}")
+
     with open(process_json_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
 
     process_jsonl_path = os.path.join(common.output_dir, "training_process.jsonl")
     with open(process_jsonl_path, "w", encoding="utf-8") as f:
-        for rec in process_records:
+        for rec in manifest["records"]:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
     print(f"Training process manifest saved: {process_json_path}")

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import time
 import json
 import os
@@ -7,6 +9,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from tqdm.auto import tqdm
 
 from src.training.config import TransformerConfig
 from src.utils.metrics import apply_per_label_thresholds, compute_metrics, tune_per_label_thresholds
@@ -115,10 +118,13 @@ def run_transformer(
     use_smote: bool,
     output_dir: str,
     save_dir: str = "",
+    smote_target_ratio: float = 1.0,
 ) -> Tuple[Dict[str, float], float, float]:
-    tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
+    checkpoint_path = cfg.local_model_path or cfg.model_name
+    tokenizer = AutoTokenizer.from_pretrained(checkpoint_path, local_files_only=True)
     model = AutoModelForSequenceClassification.from_pretrained(
-        cfg.model_name,
+        checkpoint_path,
+        local_files_only=True,
         num_labels=train_labels.shape[1],
         problem_type="multi_label_classification",
     )
@@ -132,8 +138,11 @@ def run_transformer(
     tr_ids_res, tr_mask_res, y_train_res = tr_ids, tr_mask, train_labels
     smote_stats = {"applied": 0, "method": "disabled"}
     if use_smote:
-        comb = np.concatenate([tr_ids, tr_mask], axis=1).astype(np.float32)
-        comb_res, y_train_res, smote_stats = apply_smote_multilabel(comb, train_labels, seed=seed)
+        # Duplicate complete encoded samples; never interpolate categorical token IDs.
+        comb = np.concatenate([tr_ids, tr_mask], axis=1)
+        comb_res, y_train_res, smote_stats = apply_smote_multilabel(
+            comb, train_labels, seed=seed, target_ratio=smote_target_ratio
+        )
         seq_len = tr_ids.shape[1]
         tr_ids_res = np.clip(np.rint(comb_res[:, :seq_len]), 0, tokenizer.vocab_size - 1).astype(np.int64)
         tr_mask_res = np.clip(np.rint(comb_res[:, seq_len:]), 0, 1).astype(np.int64)
@@ -172,11 +181,23 @@ def run_transformer(
     train_loss_history: list[float] = []
     val_loss_history: list[float] = []
 
+    print(
+        f"Transformer training device: {device} | epochs: {cfg.epochs} | "
+        f"training batches per epoch: {len(train_loader)}",
+        flush=True,
+    )
+
     tr_start = time.perf_counter()
     for epoch in range(int(cfg.epochs)):
         model.train()
         batch_losses = []
-        for batch in train_loader:
+        batch_progress = tqdm(
+            train_loader,
+            desc=f"{cfg.model_name} epoch {epoch + 1}/{cfg.epochs}",
+            unit="batch",
+            leave=False,
+        )
+        for batch in batch_progress:
             batch = _move_batch_to_device(batch, device)
             labels = batch["labels"]
             optimizer.zero_grad()
@@ -185,10 +206,16 @@ def run_transformer(
             loss.backward()
             optimizer.step()
             batch_losses.append(float(loss.detach().cpu()))
+            batch_progress.set_postfix(loss=f"{batch_losses[-1]:.4f}")
 
         epoch_ids.append(float(epoch + 1))
         train_loss_history.append(float(np.mean(batch_losses)) if batch_losses else 0.0)
         val_loss_history.append(_run_eval_loss(model, val_loader, loss_fn, device))
+        print(
+            f"{cfg.model_name} epoch {epoch + 1}/{cfg.epochs} complete | "
+            f"train_loss={train_loss_history[-1]:.4f} | val_loss={val_loss_history[-1]:.4f}",
+            flush=True,
+        )
     train_time = time.perf_counter() - tr_start
 
     val_logits = _predict_logits(model, val_loader, device)
@@ -217,6 +244,7 @@ def run_transformer(
             json.dump(
                 {
                     "model_name": cfg.model_name,
+                    "local_model_path": cfg.local_model_path,
                     "max_len": cfg.max_len,
                     "thresholds": tuned_thresholds.tolist(),
                     "use_smote": bool(use_smote),

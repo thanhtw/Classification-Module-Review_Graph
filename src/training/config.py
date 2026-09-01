@@ -1,16 +1,18 @@
+from __future__ import annotations
+
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
 LABEL_COLUMNS = ["relevance", "concreteness", "constructive"]
 AVAILABLE_MODELS = [
-    "bert",
-    "roberta",
     "linear_svm",
-    "naive_bayes",
     "logistic_regression",
+    "naive_bayes",
     "lstm",
     "bilstm",
+    "bert",
+    "roberta",
     "llm_zero_shot",
     "llm_few_shot",
 ]
@@ -44,6 +46,7 @@ class RNNConfig:
 @dataclass
 class TransformerConfig:
     model_name: str
+    local_model_path: str = ""
     max_len: int = 128
     batch_size: int = 16
     epochs: int = 30
@@ -53,10 +56,11 @@ class TransformerConfig:
 
 @dataclass
 class LLMConfig:
-    model_name: str = "gpt-5.2-codex"
-    max_new_tokens: int = 128  # Increased for safety
+    model_name: str = "gpt-5.6-luna"
+    max_new_tokens: int = 512
     temperature: float = 0.0
     few_shot_k: int = 10
+    reasoning_effort: str = "none"
 
 
 def load_env_file(env_path: str | Path = ".env") -> None:

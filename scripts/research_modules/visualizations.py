@@ -1,5 +1,7 @@
 """Module for generating visualizations (SMOTE, confusion matrices, training curves, heatmaps)"""
 
+from __future__ import annotations
+
 import argparse
 import json
 import sys
@@ -27,8 +29,8 @@ def _thousands_formatter(x, _):
 def _short_model_name(name: str) -> str:
     """Normalize long model names for cleaner figure labels."""
     aliases = {
-        "gpt-5.2-codex (LLM, Zero-shot)": "LLM Zero-shot",
-        "gpt-5.2-codex (LLM, Few-shot k=10)": "LLM Few-shot",
+        "gpt-5.6-luna (LLM, Zero-shot)": "LLM Zero-shot",
+        "gpt-5.6-luna (LLM, Few-shot k=10)": "LLM Few-shot",
         "Linear SVM": "Linear SVM",
         "Logistic Regression": "Logistic Reg.",
         "Naive Bayes": "Naive Bayes",
@@ -53,8 +55,8 @@ def _load_best_fold_map() -> dict:
         "bilstm": "bilstm",
         "bert": "bert",
         "roberta": "roberta",
-        "gpt-5.2-codex (llm, zero-shot)": "llm_zero_shot",
-        "gpt-5.2-codex (llm, few-shot k=10)": "llm_few_shot",
+        "gpt-5.6-luna (llm, zero-shot)": "llm_zero_shot",
+        "gpt-5.6-luna (llm, few-shot k=10)": "llm_few_shot",
     }
 
     candidate_csvs = [

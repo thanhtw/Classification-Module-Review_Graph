@@ -6,7 +6,10 @@ This module orchestrates comprehensive research paper generation by importing
 specialized modules for different aspects of the comparison.
 """
 
+from __future__ import annotations
+
 import sys
+import os
 import subprocess
 import argparse
 import json
@@ -22,6 +25,12 @@ project_root = Path(__file__).parent.parent
 scripts_dir = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(scripts_dir))
+
+# Windows terminals commonly default to cp1252, while the reports use Unicode
+# symbols. Avoid crashing merely because progress output contains those symbols.
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, "reconfigure"):
+        stream.reconfigure(encoding="utf-8", errors="replace")
 
 from src.data.preprocessor import load_and_clean_data
 from src.training.config import LABEL_COLUMNS
@@ -45,6 +54,7 @@ from research_modules import (
     # Table generators
     generate_comprehensive_metrics_report,
     generate_detailed_comparison_table,
+    generate_multi_metric_significance_report,
 )
 
 
@@ -56,25 +66,34 @@ MODELS_TO_COMPARE = [
     ("BiLSTM", "bilstm"),
     ("BERT", "bert"),
     ("RoBERTa", "roberta"),
-    ("gpt-5.2-codex (LLM, Zero-shot)", "llm_zero_shot"),
-    ("gpt-5.2-codex (LLM, Few-shot k=10)", "llm_few_shot"),
+    ("gpt-5.6-luna (LLM, Zero-shot)", "llm_zero_shot"),
+    ("gpt-5.6-luna (LLM, Few-shot k=10)", "llm_few_shot"),
 ]
 
 MODEL_CATEGORIES = {
     "Machine Learning": ["Linear SVM", "Logistic Regression", "Naive Bayes"],
     "Deep Learning": ["LSTM", "BiLSTM"],
     "Transformers": ["BERT", "RoBERTa"],
-    "LLM (OpenAI API)": ["gpt-5.2-codex (LLM, Zero-shot)", "gpt-5.2-codex (LLM, Few-shot k=10)"],
+    "LLM (OpenAI API)": ["gpt-5.6-luna (LLM, Zero-shot)", "gpt-5.6-luna (LLM, Few-shot k=10)"],
 }
 MODEL_KEY_TO_DISPLAY = {model_key: model_display for model_display, model_key in MODELS_TO_COMPARE}
 ALL_MODEL_KEYS = [model_key for _, model_key in MODELS_TO_COMPARE]
+TEN_FOLD_MODEL_KEYS = [
+    "linear_svm",
+    "logistic_regression",
+    "naive_bayes",
+    "lstm",
+    "bilstm",
+    "bert",
+    "roberta",
+]
 
 
 def _run_full_training_pipeline(models_to_compare: list[tuple[str, str]], n_folds: int, seed: int) -> None:
     """Run the training pipeline once for all requested models."""
     cmd = [
         sys.executable,
-        "scripts/train.py",
+        str(scripts_dir / "train.py"),
         "--n_folds",
         str(n_folds),
         "--seed",
@@ -94,7 +113,7 @@ def _build_best_fold_results(
     full_df: pd.DataFrame,
     folds_for_export: List[Dict[str, np.ndarray]],
 ) -> tuple[list[dict], list[dict], list[str]]:
-    """Build best-fold comparison rows from the unified training results."""
+    """Aggregate fold metrics and retain the best fold for artifact inspection."""
     comparison_results: list[dict] = []
     feature_split_records: list[dict] = []
     failed_models: list[str] = []
@@ -124,20 +143,21 @@ def _build_best_fold_results(
             "model_key": model_key,
             "num_folds": len(model_df),
             "selected_fold": best_fold,
-            "selection_rule": "f1_macro > f1_micro > subset_accuracy",
+            "artifact_selection_rule": "f1_macro > f1_micro > subset_accuracy",
         }
 
-        numeric_cols = model_df.select_dtypes(include=["float64", "int64"]).columns
+        numeric_cols = model_df.select_dtypes(include=[np.number]).columns
         numeric_cols = [col for col in numeric_cols if col not in [model_col, "fold", "Fold"]]
         for col in numeric_cols:
-            if col in best_row and pd.notna(best_row[col]):
-                best_metrics[f"{col}_mean"] = float(best_row[col])
-                best_metrics[f"{col}_std"] = 0.0
+            values = pd.to_numeric(model_df[col], errors="coerce").dropna()
+            if not values.empty:
+                best_metrics[f"{col}_mean"] = float(values.mean())
+                best_metrics[f"{col}_std"] = float(values.std(ddof=1)) if len(values) > 1 else 0.0
 
         artifact_dir = str(best_row.get("artifact_dir", ""))
         if artifact_dir:
             best_metrics["artifact_dir"] = artifact_dir
-            best_metrics.update(_load_thresholds_for_best_fold(artifact_dir))
+        best_metrics.update(_aggregate_threshold_stats(model_df))
 
         train_split_path, test_split_path, train_size, test_size = _export_best_fold_split_files(
             data_df=full_df,
@@ -173,6 +193,8 @@ def _load_thresholds_from_artifact(artifact_dir: str) -> np.ndarray | None:
         return None
 
     artifact_path = Path(artifact_dir)
+    if not artifact_path.is_absolute():
+        artifact_path = project_root / artifact_path
     if not artifact_path.exists():
         return None
 
@@ -316,6 +338,13 @@ def _export_best_fold_split_files(
 
 def _select_best_fold_row(model_df: pd.DataFrame) -> pd.Series:
     """Select best fold by evaluation priority: f1_macro > f1_micro > subset_accuracy."""
+    required_columns = ["f1_macro", "f1_micro", "subset_accuracy"]
+    missing_columns = [column for column in required_columns if column not in model_df.columns]
+    if missing_columns:
+        raise ValueError(
+            "Detailed results are missing columns required for best-fold selection: "
+            + ", ".join(missing_columns)
+        )
     return model_df.sort_values(
         ["f1_macro", "f1_micro", "subset_accuracy"],
         ascending=[False, False, False],
@@ -364,6 +393,9 @@ def _export_txt_report(sorted_results: list[dict], output_path: Path) -> None:
 
 def run_research_comparison(n_folds=10, seed=42, selected_model_keys=None):
     """Run comprehensive comparison: ML → DL → Transformers → LLM, then compare all"""
+    if n_folds < 1:
+        raise ValueError("n_folds must be at least 1.")
+
     if selected_model_keys is None:
         selected_model_keys = list(ALL_MODEL_KEYS)
 
@@ -380,7 +412,7 @@ def run_research_comparison(n_folds=10, seed=42, selected_model_keys=None):
     print("COMPREHENSIVE MODEL COMPARISON: All Models vs LLM (Zero-shot & Few-shot)")
     print("=" * 80)
     print(f"\nConfiguration:")
-    print(f"  - LLM Model: gpt-5.2-codex (OpenAI API)")
+    print(f"  - Default LLM Model: gpt-5.6-luna (OpenAI API; configurable in .env)")
     print(f"  - LLM Approaches: Zero-shot + Few-shot (k=10)")
     print(f"  - Selected Models: {', '.join(selected_model_keys)}")
     print(f"  - Folds: {n_folds}")
@@ -389,7 +421,12 @@ def run_research_comparison(n_folds=10, seed=42, selected_model_keys=None):
     print(f"  - Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("\n" + "=" * 80 + "\n")
 
-    full_df = load_and_clean_data("data/cleaned_3label_data.csv")
+    data_path = project_root / "data" / "cleaned_3label_data.csv"
+    if not data_path.exists():
+        raise FileNotFoundError(f"Dataset not found: {data_path}")
+    full_df = load_and_clean_data(str(data_path))
+    if n_folds > len(full_df):
+        raise ValueError(f"n_folds ({n_folds}) cannot exceed the number of samples ({len(full_df)}).")
     all_labels = full_df[LABEL_COLUMNS].values.astype(int)
     folds_for_export = _make_folds_for_export(
         n_samples=len(full_df),
@@ -406,6 +443,25 @@ def run_research_comparison(n_folds=10, seed=42, selected_model_keys=None):
         raise FileNotFoundError(f"Results file not found after training: {detailed_results}")
 
     df = pd.read_csv(detailed_results)
+    results_dir = project_root / "results" / "research_comparison"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    statistical_report = None
+    completed_model_keys = set(df["model"].astype(str)) if "model" in df.columns else set()
+    if set(TEN_FOLD_MODEL_KEYS).issubset(completed_model_keys):
+        statistical_report = generate_multi_metric_significance_report(
+            results_df=df,
+            output_dir=results_dir,
+            alpha=0.05,
+            model_keys=TEN_FOLD_MODEL_KEYS,
+            seed=seed,
+        )
+        print("Statistical analysis complete for precision, recall, accuracy, and F1-score.")
+    else:
+        missing_stat_models = sorted(set(TEN_FOLD_MODEL_KEYS).difference(completed_model_keys))
+        print(
+            "Statistical significance analysis skipped because these benchmark "
+            f"models are incomplete: {', '.join(missing_stat_models)}"
+        )
     comparison_results, feature_split_records, failed_models = _build_best_fold_results(
         results_df=df,
         models_to_compare=models_to_compare,
@@ -417,7 +473,7 @@ def run_research_comparison(n_folds=10, seed=42, selected_model_keys=None):
         print(f"\n✓ {result['model']} Complete")
         print(f"  - Folds: {result.get('num_folds', 0)}")
         print(f"  - Selected best fold: {result.get('selected_fold', 0)}")
-        print(f"  - F1-macro (best fold): {result.get('f1_macro_mean', 0.0):.4f}")
+        print(f"  - F1-macro (mean across folds): {result.get('f1_macro_mean', 0.0):.4f}")
     
     # Generate comprehensive comparison report
     print("\n" + "=" * 80)
@@ -429,12 +485,12 @@ def run_research_comparison(n_folds=10, seed=42, selected_model_keys=None):
         comparison_df = pd.DataFrame(comparison_results)
         
         # Save to CSV
-        results_dir = Path("results/research_comparison")
-        results_dir.mkdir(parents=True, exist_ok=True)
-        
         csv_path = results_dir / "all_models_comparison.csv"
         comparison_df.to_csv(csv_path, index=False)
         print(f"✓ Results saved to: {csv_path}\n")
+        aggregate_csv_path = results_dir / "fold_aggregate_model_comparison.csv"
+        comparison_df.to_csv(aggregate_csv_path, index=False)
+        print(f"✓ Fold-aggregate comparison saved to: {aggregate_csv_path}\n")
         best_csv_path = results_dir / "best_fold_model_comparison.csv"
         comparison_df.to_csv(best_csv_path, index=False)
         print(f"✓ Best-fold comparison saved to: {best_csv_path}\n")
@@ -552,6 +608,10 @@ def run_research_comparison(n_folds=10, seed=42, selected_model_keys=None):
         print(f"  ✓ {results_dir}/per_label_metrics_report.json")
         print(f"  ✓ {results_dir}/per_label_metrics_report.txt")
         print(f"  ✓ {results_dir}/multilabel_metrics_report.json")
+        if statistical_report:
+            print(f"  ✓ {results_dir}/statistical_significance/all_metrics_statistical_report.json")
+            print(f"  ✓ {results_dir}/statistical_significance/all_metrics_friedman_omnibus.csv")
+            print(f"  ✓ {results_dir}/statistical_significance/all_metrics_pairwise_wilcoxon_holm.csv")
         
         print("\n✨ Reports generated successfully!")
         print("=" * 80)
@@ -562,6 +622,8 @@ def run_research_comparison(n_folds=10, seed=42, selected_model_keys=None):
 
 
 if __name__ == "__main__":
+    # Keep all legacy report helpers that use relative paths anchored to the repo.
+    os.chdir(project_root)
     parser = argparse.ArgumentParser(description="Research paper comparison: LLM vs Fine-tuned Transformers")
     parser.add_argument("--n_folds", type=int, default=10, help="Number of cross-validation folds")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
@@ -587,7 +649,7 @@ if __name__ == "__main__":
     print("GENERATING COMPREHENSIVE RESEARCH PAPER DOCUMENTATION")
     print("=" * 80)
     
-    output_dir = "results/research_comparison"
+    output_dir = project_root / "results" / "research_comparison"
     generate_research_paper_appendix(output_dir=output_dir)
     
     # Run model comparison

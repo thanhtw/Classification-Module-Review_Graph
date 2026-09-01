@@ -1,13 +1,8 @@
+from __future__ import annotations
+
 from typing import Dict, Tuple
 
 import numpy as np
-
-try:
-    from imblearn.over_sampling import RandomOverSampler
-    from imblearn.over_sampling import SMOTE
-except ImportError:
-    SMOTE = None
-    RandomOverSampler = None
 
 
 def encode_combos(labels: np.ndarray) -> np.ndarray:
@@ -25,30 +20,6 @@ def decode_combos(combo_labels: np.ndarray, n_labels: int) -> np.ndarray:
     return out
 
 
-def _random_oversample_fallback(
-    x: np.ndarray,
-    y_label_col: np.ndarray,
-    seed: int,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Simple random oversampling fallback when imbalanced-learn is unavailable."""
-    rng = np.random.default_rng(seed)
-    classes, counts = np.unique(y_label_col, return_counts=True)
-    if len(classes) < 2:
-        return x.copy(), y_label_col.copy()
-
-    max_count = int(counts.max())
-    sampled_indices = []
-    for klass, count in zip(classes, counts):
-        klass_idx = np.where(y_label_col == klass)[0]
-        sampled_indices.extend(klass_idx.tolist())
-        deficit = max_count - int(count)
-        if deficit > 0:
-            sampled_indices.extend(rng.choice(klass_idx, size=deficit, replace=True).tolist())
-
-    sampled_indices = np.asarray(sampled_indices, dtype=np.int64)
-    return x[sampled_indices], y_label_col[sampled_indices]
-
-
 def apply_smote_multilabel(
     x: np.ndarray,
     y: np.ndarray,
@@ -56,46 +27,46 @@ def apply_smote_multilabel(
     postprocess: str = "float",
     clip_min: int = 0,
     clip_max: int = 1,
+    target_ratio: float = 1.0,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
+    """Resample minority labels using complete, label-preserving samples.
+
+    ``target_ratio`` is the desired minority/majority ratio for each binary label.
+    Sampling is sequential because labels overlap. Unlike the previous implementation,
+    this never fabricates secondary labels or interpolates categorical token IDs.
+    Consequently it is safe for tokenized transformer/RNN inputs as well as continuous
+    ML features. Resampling must only be applied to a training fold.
     """
-    Balance multilabel data: overmultiple layers for each label.
-    
-    Strategy: For each label independently, oversample its minority class to match majority.
-    Do this once per label and accept that some secondary imbalance may occur across labels.
-    
-    This is the standard multilabel-aware approach used in practice.
-    """
+    if x.shape[0] != y.shape[0]:
+        raise ValueError("x and y must contain the same number of samples")
+    if y.ndim != 2:
+        raise ValueError("y must be a two-dimensional multilabel matrix")
+    if not 0.0 < target_ratio <= 1.0:
+        raise ValueError("target_ratio must be in the interval (0, 1]")
 
     n_samples, n_labels = y.shape
     rng = np.random.default_rng(seed)
-
-
-    x_sets = [x]
-    y_sets = [y]
+    selected = np.arange(n_samples, dtype=np.int64)
+    added_per_label = []
 
     for label_idx in range(n_labels):
-        y_label_col = y[:, label_idx]
-        if RandomOverSampler is not None:
-            ros = RandomOverSampler(random_state=seed + label_idx)
-            x_res, y_label_res = ros.fit_resample(x, y_label_col)
-        else:
-            x_res, y_label_res = _random_oversample_fallback(x, y_label_col, seed + label_idx)
-        n_new = len(x_res) - len(x)
-        if n_new > 0:
-            x_new = x_res[-n_new:]
-            y_new = np.zeros((n_new, n_labels), dtype=y.dtype)
-            # Set the current label to the correct value
-            y_new[:, label_idx] = y_label_res[-n_new:]
-            # For other labels, randomly sample from the original data
-            for j in range(n_labels):
-                if j != label_idx:
-                    y_new[:, j] = rng.choice(y[:, j], size=n_new, replace=True)
-            x_sets.append(x_new)
-            y_sets.append(y_new)
+        current = y[selected, label_idx]
+        classes, counts = np.unique(current, return_counts=True)
+        if len(classes) < 2:
+            added_per_label.append(0)
+            continue
+        minority_class = classes[int(np.argmin(counts))]
+        minority_count = int(counts.min())
+        majority_count = int(counts.max())
+        desired_minority = int(np.ceil(target_ratio * majority_count))
+        deficit = max(0, desired_minority - minority_count)
+        candidates = selected[current == minority_class]
+        if deficit and len(candidates):
+            selected = np.concatenate([selected, rng.choice(candidates, size=deficit, replace=True)])
+        added_per_label.append(deficit)
 
-    # Concatenate all, allow duplicates
-    x_resampled = np.vstack(x_sets)
-    y_resampled = np.vstack(y_sets)
+    x_resampled = x[selected].copy()
+    y_resampled = y[selected].copy()
 
     if postprocess == "int":
         x_resampled = np.rint(x_resampled).astype(np.int64)
@@ -104,39 +75,6 @@ def apply_smote_multilabel(
     pos_before = [int(y[:, i].sum()) for i in range(y.shape[1])]
     neg_before = [int(len(y) - y[:, i].sum()) for i in range(y.shape[1])]
 
-
-    # Iterative downsampling: keep applying balance for each label until convergence
-    # This ensures each label is as balanced as possible without aggressive intersection
-    max_iterations = 10
-    iteration = 0
-    prev_size = len(y_resampled) + 1
-    
-    while iteration < max_iterations and len(y_resampled) < prev_size:
-        prev_size = len(y_resampled)
-        iteration += 1
-        
-        for label_idx in range(n_labels):
-            y_col = y_resampled[:, label_idx]
-            pos_indices = np.where(y_col == 1)[0]
-            neg_indices = np.where(y_col == 0)[0]
-            
-            n_pos = len(pos_indices)
-            n_neg = len(neg_indices)
-            
-            # If imbalanced, downsample majority to match minority
-            if n_pos > n_neg and n_neg > 0:
-                keep_pos = set(rng.choice(pos_indices, size=n_neg, replace=False))
-                keep_all = keep_pos | set(neg_indices)
-                keep_indices = sorted(list(keep_all))
-                x_resampled = x_resampled[keep_indices]
-                y_resampled = y_resampled[keep_indices]
-                
-            elif n_neg > n_pos and n_pos > 0:
-                keep_neg = set(rng.choice(neg_indices, size=n_pos, replace=False))
-                keep_all = set(pos_indices) | keep_neg
-                keep_indices = sorted(list(keep_all))
-                x_resampled = x_resampled[keep_indices]
-                y_resampled = y_resampled[keep_indices]
 
     pos_after = [int(y_resampled[:, i].sum()) for i in range(y_resampled.shape[1])]
     neg_after = [int(len(y_resampled) - y_resampled[:, i].sum()) for i in range(y_resampled.shape[1])]
@@ -151,14 +89,15 @@ def apply_smote_multilabel(
         "applied": int(len(y_resampled) > len(y)),
         "n_before": int(len(y)),
         "n_after": int(len(y_resampled)),
-        "method": "multilabel_oversampling_per_label",
-        "backend": "imblearn_random_oversampler" if RandomOverSampler is not None else "numpy_fallback_random_oversampler",
+        "method": "multilabel_label_preserving_random_oversampling",
+        "backend": "numpy_random_generator",
+        "target_ratio": float(target_ratio),
         "label_pos_before": pos_before,
         "label_neg_before": neg_before,
         "label_pos_after": pos_after,
         "label_neg_after": neg_after,
         "label_abs_diff_after": residual_diff_after,
-        "fully_balanced_each_label": int(all(v <= 10 for v in residual_diff_after)),
+        "added_per_label_step": added_per_label,
         "combo_balanced": combo_balanced,
         "combo_counts_after": {str(int(c)): int(cnt) for c, cnt in zip(uniq_after, counts_after)},
         "label_balance_steps": int(len(y_resampled) - len(y)),

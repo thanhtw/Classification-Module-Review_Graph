@@ -1,12 +1,107 @@
+from __future__ import annotations
+
+import json
 import os
+from pathlib import Path
 from typing import Dict, List
 
 import pandas as pd
+import numpy as np
+
+from src.training.config import LABEL_COLUMNS
+
+
+def export_test_predictions(
+    *,
+    save_dir: str,
+    model: str,
+    fold: int,
+    source_indices,
+    texts,
+    y_true,
+    y_pred,
+) -> str:
+    """Persist inspectable row-level test predictions for any model family."""
+    true = np.asarray(y_true)
+    pred = np.asarray(y_pred)
+    if true.shape != pred.shape:
+        raise ValueError(f"Prediction shape {pred.shape} does not match labels {true.shape}")
+    if true.ndim != 2 or true.shape[1] != len(LABEL_COLUMNS):
+        raise ValueError(
+            f"Expected (n, {len(LABEL_COLUMNS)}) multilabel results, got {true.shape}"
+        )
+    if len(texts) != len(true) or len(source_indices) != len(true):
+        raise ValueError("Texts, source indices, labels, and predictions must have equal length")
+
+    data = {
+        "source_index": [int(index) for index in source_indices],
+        "text": [str(text) for text in texts],
+        "model": [str(model)] * len(true),
+        "fold": [int(fold)] * len(true),
+    }
+    for label_index, label in enumerate(LABEL_COLUMNS):
+        data[f"true_{label}"] = true[:, label_index].astype(int)
+        data[f"pred_{label}"] = pred[:, label_index].astype(int)
+        data[f"correct_{label}"] = (true[:, label_index] == pred[:, label_index]).astype(int)
+    data["exact_match"] = np.all(true == pred, axis=1).astype(int)
+
+    destination = Path(save_dir) / "test_results_with_ground_truth.csv"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(data).to_csv(destination, index=False, encoding="utf-8")
+    return str(destination)
+
+
+def export_fold_result(row: Dict[str, object], output_dir: str) -> None:
+    """Persist one completed run in both model-first and fold-first layouts."""
+    model = str(row["model"])
+    fold = int(row["fold"])
+    fold_name = f"fold_{fold:02d}"
+    root = Path(output_dir)
+    destinations = [
+        root / "by_model" / model / fold_name,
+        root / "by_fold" / fold_name / model,
+    ]
+    serializable = {
+        key: value.item() if hasattr(value, "item") else value
+        for key, value in row.items()
+    }
+    for destination in destinations:
+        destination.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame([serializable]).to_csv(destination / "metrics.csv", index=False, encoding="utf-8")
+        (destination / "metrics.json").write_text(
+            json.dumps(serializable, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+
+def _export_grouped_views(df: pd.DataFrame, output_dir: str) -> None:
+    """Export aggregate tables grouped by model and by fold."""
+    root = Path(output_dir)
+    numeric_metrics = [
+        column for column in df.select_dtypes(include="number").columns
+        if column != "fold"
+    ]
+    for model, model_df in df.groupby("model", sort=True):
+        model_dir = root / "by_model" / str(model)
+        model_dir.mkdir(parents=True, exist_ok=True)
+        model_df.sort_values("fold").to_csv(model_dir / "all_folds.csv", index=False, encoding="utf-8")
+        summary = model_df[numeric_metrics].agg(["mean", "std"]).transpose().reset_index()
+        summary.columns = ["metric", "mean", "std"]
+        summary.to_csv(model_dir / "summary.csv", index=False, encoding="utf-8")
+
+    for fold, fold_df in df.groupby("fold", sort=True):
+        fold_dir = root / "by_fold" / f"fold_{int(fold):02d}"
+        fold_dir.mkdir(parents=True, exist_ok=True)
+        fold_df.sort_values("model").to_csv(fold_dir / "all_models.csv", index=False, encoding="utf-8")
 
 
 def export_results(rows: List[Dict[str, float]], output_dir: str) -> str:
     os.makedirs(output_dir, exist_ok=True)
     df = pd.DataFrame(rows)
+    if df.empty:
+        raise ValueError("No completed model/fold results were available to export")
+    for row in rows:
+        export_fold_result(row, output_dir)
+    _export_grouped_views(df, output_dir)
     out_csv = os.path.join(output_dir, "model_results_detailed.csv")
     df.to_csv(out_csv, index=False, encoding="utf-8")
 

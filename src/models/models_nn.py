@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import time
 import json
 import os
@@ -515,5 +517,4 @@ def run_lstm_like_from_sequences(
             )
 
     return metrics, train_time, infer_time
-
 

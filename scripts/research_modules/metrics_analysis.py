@@ -58,8 +58,8 @@ def generate_fold_level_per_label_report(
 
     if model_display_names is None:
         model_display_names = {
-            "llm_zero_shot": "gpt-5.2-codex (LLM, Zero-shot)",
-            "llm_few_shot": "gpt-5.2-codex (LLM, Few-shot k=10)",
+            "llm_zero_shot": "gpt-5.6-luna (LLM, Zero-shot)",
+            "llm_few_shot": "gpt-5.6-luna (LLM, Few-shot k=10)",
         }
 
     fold_rows = []

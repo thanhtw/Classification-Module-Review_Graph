@@ -179,16 +179,16 @@ def generate_model_configurations(output_dir="results/research_comparison"):
             },
             "llm_zero_shot": {
                 "category": "LLM (OpenAI API)",
-                "description": "GPT-5.2-Codex - Zero-shot Classification",
-                "model_id": "gpt-5.2-codex",
+                "description": "GPT-5.6 Luna - Zero-shot Classification",
+                "model_id": "gpt-5.6-luna",
                 "inference_type": "OpenAI Chat Completions API (JSON schema)",
                 "hyperparameters": {"temperature": 0.0, "max_tokens": 128, "prompt_format": "JSON"},
                 "parameters": "API-managed",
             },
             "llm_few_shot": {
                 "category": "LLM (OpenAI API)",
-                "description": "GPT-5.2-Codex - Few-shot Classification (k=10)",
-                "model_id": "gpt-5.2-codex",
+                "description": "GPT-5.6 Luna - Few-shot Classification (k=10)",
+                "model_id": "gpt-5.6-luna",
                 "inference_type": "OpenAI Chat Completions API (JSON schema)",
                 "hyperparameters": {"temperature": 0.0, "max_tokens": 128, "few_shot_k": 10, "prompt_format": "JSON"},
                 "parameters": "API-managed",
@@ -341,7 +341,7 @@ def generate_training_process_report(output_dir="results/research_comparison"):
         f.write("\\subsection{Training Configuration}\n")
         f.write("\\textbf{Deep Learning Models:} Batch size 32, Adam optimizer (lr=0.001), early stopping with patience=3\\\\\\n")
         f.write("\\textbf{Transformers:} Batch size 8, AdamW optimizer (lr=2e-5), 3 epochs\\\\\\n")
-        f.write("\\textbf{LLM Models:} OpenAI Chat Completions API with JSON schema (gpt-5.2-codex), temperature=0.0, max tokens=128\\n\n")
+        f.write("\\textbf{LLM Models:} OpenAI Chat Completions API with JSON schema (gpt-5.6-luna), temperature=0.0, max tokens=128\\n\n")
         
         f.write("\\subsection{Evaluation Metrics}\n")
         f.write("We report both macro and micro-averaged metrics to account for multilabel classification:\n")

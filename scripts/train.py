@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import sys
 import os
 from pathlib import Path
@@ -42,7 +44,7 @@ except ModuleNotFoundError as e:
 from src.models.models_nn import run_lstm_like
 from src.models.models_ml import run_linear_svm, run_naive_bayes, run_logistic_regression
 from src.models.models_transformers import run_transformer
-from src.utils.reporting import export_results
+from src.utils.reporting import export_fold_result, export_results, export_test_predictions
 
 
 def parse_args() -> argparse.Namespace:
@@ -55,7 +57,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--models",
         nargs="+",
-        default=["bert", "roberta", "linear_svm", "naive_bayes", "logistic_regression", "lstm", "bilstm"],
+        default=["linear_svm", "logistic_regression", "naive_bayes", "lstm", "bilstm", "bert", "roberta"],
         choices=AVAILABLE_MODELS,
     )
     parser.add_argument("--test_size", type=float, default=0.2, help="Used only when --n_folds <= 1")
@@ -63,6 +65,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output_dir", type=str, default="results/modular_multimodel")
     parser.add_argument("--no_smote", action="store_true", help="Disable SMOTE on training split")
+    parser.add_argument(
+        "--smote_target_ratio",
+        type=float,
+        default=1.0,
+        help="Target minority/majority ratio in (0, 1] for label-preserving training-fold resampling",
+    )
 
     parser.add_argument("--rnn_epochs", type=int, default=get_env_int("TRAIN_RNN_EPOCHS", 30))
     parser.add_argument("--bert_epochs", type=int, default=get_env_int("TRAIN_BERT_EPOCHS", 30))
@@ -81,16 +89,32 @@ def parse_args() -> argparse.Namespace:
         default="hfl/chinese-roberta-wwm-ext",
         help="Hugging Face model id for RoBERTa",
     )
+    parser.add_argument(
+        "--hf_cache_dir",
+        default=get_env_str("HF_MODEL_CACHE_DIR", ".cache/huggingface/hub"),
+        help="Persistent Hugging Face cache; model files download only when missing",
+    )
 
     parser.add_argument(
         "--llm_model_name",
         type=str,
-        default=get_env_str("OPENAI_LLM_MODEL_NAME", "gpt-5.2-codex"),
+        default=get_env_str("OPENAI_LLM_MODEL_NAME", "gpt-5.6-luna"),
         help="OpenAI model name for llm_zero_shot/llm_few_shot",
     )
     parser.add_argument("--llm_few_shot_k", type=int, default=10, help="Number of few-shot examples to include in each prompt")
-    parser.add_argument("--llm_max_new_tokens", type=int, default=64, help="Maximum generated tokens for LLM responses")
+    parser.add_argument(
+        "--llm_max_new_tokens",
+        type=int,
+        default=get_env_int("OPENAI_LLM_MAX_TOKENS", 512),
+        help="Initial completion-token budget; token-limit failures retry once with a larger budget",
+    )
     parser.add_argument("--llm_temperature", type=float, default=0.0, help="Sampling temperature for LLM decoding")
+    parser.add_argument(
+        "--llm_reasoning_effort",
+        choices=["none", "low", "medium", "high", "xhigh", "max"],
+        default=get_env_str("OPENAI_LLM_REASONING_EFFORT", "none"),
+        help="Reasoning effort for GPT-5.6; classification defaults to none",
+    )
     return parser.parse_args()
 
 
@@ -144,8 +168,64 @@ def _make_folds(
     return fold_list
 
 
+def _export_fold_splits(df, folds: List[Dict[str, np.ndarray]], output_dir: str) -> None:
+    """Persist the exact train/test rows used by every model in each fold."""
+    split_root = Path(output_dir) / "splits"
+    for fold_id, fold_data in enumerate(folds, start=1):
+        fold_dir = split_root / f"fold_{fold_id:02d}"
+        train_dir = fold_dir / "train"
+        test_dir = fold_dir / "test"
+        train_dir.mkdir(parents=True, exist_ok=True)
+        test_dir.mkdir(parents=True, exist_ok=True)
+
+        train_df = df.iloc[fold_data["train_idx"]].copy()
+        test_df = df.iloc[fold_data["test_idx"]].copy()
+        train_df.insert(0, "source_index", train_df.index.astype(int))
+        test_df.insert(0, "source_index", test_df.index.astype(int))
+        train_df.to_csv(train_dir / "data.csv", index=False, encoding="utf-8")
+        test_df.to_csv(test_dir / "data.csv", index=False, encoding="utf-8")
+
+        split_metadata = {
+            "fold": fold_id,
+            "train_samples": int(len(train_df)),
+            "test_samples": int(len(test_df)),
+            "train_file": "train/data.csv",
+            "test_file": "test/data.csv",
+            "shared_by_all_models": True,
+        }
+        (fold_dir / "metadata.json").write_text(
+            json.dumps(split_metadata, indent=2), encoding="utf-8"
+        )
+
+
+def _resolve_huggingface_checkpoint(model_id: str, cache_dir: str) -> str:
+    """Resolve a complete local snapshot, downloading only when absent."""
+    from huggingface_hub import snapshot_download
+
+    cache_path = Path(cache_dir).resolve()
+    cache_path.mkdir(parents=True, exist_ok=True)
+    try:
+        snapshot_path = snapshot_download(
+            repo_id=model_id,
+            cache_dir=str(cache_path),
+            local_files_only=True,
+        )
+        print(f"Using cached Hugging Face checkpoint: {model_id} -> {snapshot_path}")
+    except Exception:
+        print(f"Checkpoint not cached; downloading once from Hugging Face: {model_id}")
+        snapshot_path = snapshot_download(
+            repo_id=model_id,
+            cache_dir=str(cache_path),
+            local_files_only=False,
+        )
+        print(f"Checkpoint cached for future folds and runs: {snapshot_path}")
+    return str(Path(snapshot_path).resolve())
+
+
 def main() -> None:
     args = parse_args()
+    if not 0.0 < args.smote_target_ratio <= 1.0:
+        raise ValueError("--smote_target_ratio must be in the interval (0, 1]")
     default_zh_vec_path = os.path.join("embeddings", "cc.zh.300.vec.gz")
     if not args.glove_path and os.path.exists(default_zh_vec_path):
         args.glove_path = default_zh_vec_path
@@ -192,11 +272,20 @@ def main() -> None:
     )
     bert_cfg = TransformerConfig(model_name=args.bert_model_name, epochs=args.bert_epochs, lr=args.bert_lr)
     roberta_cfg = TransformerConfig(model_name=args.roberta_model_name, epochs=args.roberta_epochs, lr=args.roberta_lr)
+    if "bert" in models_to_run:
+        bert_cfg.local_model_path = _resolve_huggingface_checkpoint(
+            bert_cfg.model_name, args.hf_cache_dir
+        )
+    if "roberta" in models_to_run:
+        roberta_cfg.local_model_path = _resolve_huggingface_checkpoint(
+            roberta_cfg.model_name, args.hf_cache_dir
+        )
     llm_cfg = LLMConfig(
         model_name=args.llm_model_name,
         max_new_tokens=args.llm_max_new_tokens,
         temperature=args.llm_temperature,
         few_shot_k=args.llm_few_shot_k,
+        reasoning_effort=args.llm_reasoning_effort,
     )
 
     analysis_dir = os.path.join(common.output_dir, "global_train_data_analysis")
@@ -209,6 +298,7 @@ def main() -> None:
     )
 
     folds = _make_folds(len(texts), args.n_folds, common.test_size, common.seed, labels=labels)
+    _export_fold_splits(df, folds, common.output_dir)
 
     print(f"Total samples: {len(texts)}")
     print(f"Validation mode: {'cross-validation' if args.n_folds >= 2 else 'holdout'}")
@@ -216,7 +306,8 @@ def main() -> None:
         print(f"Folds: {args.n_folds}")
     else:
         print(f"Holdout test_size: {common.test_size}")
-    print(f"SMOTE on train split (ML only): {bool(common.use_smote)}")
+    print(f"Training-fold resampling enabled: {bool(common.use_smote)}")
+    print(f"Resampling target minority/majority ratio: {args.smote_target_ratio:.2f}")
     if any(m in {"llm_zero_shot", "llm_few_shot"} for m in models_to_run):
         print(f"LLM backend model: {llm_cfg.model_name}")
 
@@ -225,9 +316,9 @@ def main() -> None:
     artifacts_root = os.path.join(common.output_dir, "model_artifacts")
     os.makedirs(artifacts_root, exist_ok=True)
 
-    smote_allowed_models = {"linear_svm", "naive_bayes", "logistic_regression"}
+    smote_allowed_models = {"linear_svm", "naive_bayes", "logistic_regression", "bert", "roberta"}
     total_runs = len(models_to_run) * len(folds)
-    overall_pbar = tqdm(total=total_runs, desc="Training progress", unit="fold")
+    overall_pbar = tqdm(total=total_runs, desc="Evaluation progress", unit="fold")
 
     try:
         for raw_name in models_to_run:
@@ -267,6 +358,7 @@ def main() -> None:
                     use_smote=use_smote_for_model,
                     output_dir=model_temp_dir,
                     save_dir=model_artifact_dir,
+                    smote_target_ratio=args.smote_target_ratio,
                     )
                 elif model_name == "roberta":
                     metrics, train_t, infer_t = run_transformer(
@@ -279,6 +371,7 @@ def main() -> None:
                     use_smote=use_smote_for_model,
                     output_dir=model_temp_dir,
                     save_dir=model_artifact_dir,
+                    smote_target_ratio=args.smote_target_ratio,
                     )
                 elif model_name == "linear_svm":
                     metrics, train_t, infer_t = run_linear_svm(
@@ -290,6 +383,7 @@ def main() -> None:
                     seed=seed,
                     epochs=args.ml_epochs,
                     save_dir=model_artifact_dir,
+                    smote_target_ratio=args.smote_target_ratio,
                     )
                 elif model_name == "naive_bayes":
                     metrics, train_t, infer_t = run_naive_bayes(
@@ -301,6 +395,7 @@ def main() -> None:
                     seed=seed,
                     epochs=args.ml_epochs,
                     save_dir=model_artifact_dir,
+                    smote_target_ratio=args.smote_target_ratio,
                     )
                 elif model_name == "logistic_regression":
                     metrics, train_t, infer_t = run_logistic_regression(
@@ -312,6 +407,7 @@ def main() -> None:
                     seed=seed,
                     epochs=args.ml_epochs,
                     save_dir=model_artifact_dir,
+                    smote_target_ratio=args.smote_target_ratio,
                     )
                 elif model_name == "lstm":
                     metrics, train_t, infer_t = run_lstm_like(
@@ -351,6 +447,21 @@ def main() -> None:
                 else:
                     raise ValueError(f"Unsupported model in current pipeline scope: {raw_name}")
 
+                # Every model implementation persists predictions.npy and labels.npy.
+                # Also write a readable row-level test result immediately, before
+                # proceeding to the next model/fold.
+                saved_predictions = np.load(os.path.join(model_artifact_dir, "predictions.npy"))
+                saved_labels = np.load(os.path.join(model_artifact_dir, "labels.npy"))
+                test_results_file = export_test_predictions(
+                    save_dir=model_artifact_dir,
+                    model=model_name,
+                    fold=fold_id,
+                    source_indices=test_idx,
+                    texts=test_texts,
+                    y_true=saved_labels,
+                    y_pred=saved_predictions,
+                )
+
                 model_end = time.time()
 
                 row = {
@@ -359,11 +470,18 @@ def main() -> None:
                     "train_time_sec": float(train_t),
                     "infer_time_sec": float(infer_t),
                     "smote_train_only": int(use_smote_for_model),
+                    "smote_target_ratio": float(args.smote_target_ratio) if use_smote_for_model else 0.0,
                     "artifact_dir": model_artifact_dir,
                     "temp_dir": model_temp_dir,
+                    "execution_type": "prediction_only" if model_name in {"llm_zero_shot", "llm_few_shot"} else "train_and_test",
+                    "training_required": int(model_name not in {"llm_zero_shot", "llm_few_shot"}),
+                    "test_results_file": test_results_file,
                 }
                 row.update(metrics)
                 rows.append(row)
+                # Save every completed model/fold immediately so interrupted
+                # long-running experiments retain all finished results.
+                export_fold_result(row, common.output_dir)
 
                 process_records.append(
                     {
@@ -374,11 +492,16 @@ def main() -> None:
                         "artifact_dir": model_artifact_dir,
                         "temp_dir": model_temp_dir,
                         "analysis_dir": analysis_dir,
+                        "smote_train_only": bool(use_smote_for_model),
+                        "smote_target_ratio": float(args.smote_target_ratio) if use_smote_for_model else 0.0,
                         "started_at_unix": float(model_start),
                         "ended_at_unix": float(model_end),
                         "train_time_sec": float(train_t),
                         "infer_time_sec": float(infer_t),
                         "llm_model_name": llm_cfg.model_name if model_name in {"llm_zero_shot", "llm_few_shot"} else "",
+                        "execution_type": "prediction_only" if model_name in {"llm_zero_shot", "llm_few_shot"} else "train_and_test",
+                        "prediction_scope": "held-out test fold only",
+                        "test_results_file": test_results_file,
                         "metrics": {k: float(v) for k, v in metrics.items()},
                     }
                 )
@@ -398,6 +521,7 @@ def main() -> None:
             "test_size": float(common.test_size),
             "n_folds": int(args.n_folds),
             "use_smote_on_training_split": bool(common.use_smote),
+            "smote_target_ratio": float(args.smote_target_ratio),
             "models": list(models_to_run),
             "label_columns": list(LABEL_COLUMNS),
             "llm": {
@@ -405,10 +529,14 @@ def main() -> None:
                 "few_shot_k": int(llm_cfg.few_shot_k),
                 "max_new_tokens": int(llm_cfg.max_new_tokens),
                 "temperature": float(llm_cfg.temperature),
+                "reasoning_effort": llm_cfg.reasoning_effort,
             },
             "transformers": {
                 "bert_model_name": bert_cfg.model_name,
+                "bert_local_model_path": bert_cfg.local_model_path,
                 "roberta_model_name": roberta_cfg.model_name,
+                "roberta_local_model_path": roberta_cfg.local_model_path,
+                "huggingface_cache_dir": str(Path(args.hf_cache_dir).resolve()),
             },
         },
         "dataset": {

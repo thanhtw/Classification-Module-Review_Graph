@@ -61,6 +61,7 @@ def _prepare_data(
     test_texts: Sequence[str],
     use_smote: bool,
     seed: int,
+    smote_target_ratio: float = 1.0,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Word2VecVectorizer, Dict]:
     """
     Prepare data: Word2Vec embedding extraction and optional SMOTE.
@@ -95,7 +96,7 @@ def _prepare_data(
     if use_smote:
         # SMOTE works with dense arrays
         x_res, y_res, smote_stats = apply_smote_multilabel(
-            x_train.astype(np.float32), train_labels, seed=seed
+            x_train.astype(np.float32), train_labels, seed=seed, target_ratio=smote_target_ratio
         )
         x_train_fit = x_res
         y_train = y_res
@@ -113,6 +114,7 @@ def run_linear_svm(
     seed: int,
     epochs: int,
     save_dir: str = "",
+    smote_target_ratio: float = 1.0,
 ) -> Tuple[Dict[str, float], float, float]:
     """
     Linear Support Vector Machine with OneVsRestClassifier.
@@ -140,7 +142,7 @@ def run_linear_svm(
         infer_time: Inference time in seconds
     """
     x_train, y_train, x_test, vectorizer, smote_stats = _prepare_data(
-        train_texts, train_labels, test_texts, use_smote, seed
+        train_texts, train_labels, test_texts, use_smote, seed, smote_target_ratio
     )
 
     # Step 5: OneVsRestClassifier with LinearSVC
@@ -226,6 +228,7 @@ def run_naive_bayes(
     seed: int,
     epochs: int,
     save_dir: str = "",
+    smote_target_ratio: float = 1.0,
 ) -> Tuple[Dict[str, float], float, float]:
     """
     Naive Bayes with OneVsRestClassifier.
@@ -253,7 +256,7 @@ def run_naive_bayes(
         infer_time: Inference time in seconds
     """
     x_train, y_train, x_test, vectorizer, smote_stats = _prepare_data(
-        train_texts, train_labels, test_texts, use_smote, seed
+        train_texts, train_labels, test_texts, use_smote, seed, smote_target_ratio
     )
 
     # Step 5: OneVsRestClassifier with GaussianNB
@@ -332,6 +335,7 @@ def run_logistic_regression(
     seed: int,
     epochs: int,
     save_dir: str = "",
+    smote_target_ratio: float = 1.0,
 ) -> Tuple[Dict[str, float], float, float]:
     """
     Logistic Regression with OneVsRestClassifier (bonus model).
@@ -360,7 +364,7 @@ def run_logistic_regression(
         infer_time: Inference time in seconds
     """
     x_train, y_train, x_test, vectorizer, smote_stats = _prepare_data(
-        train_texts, train_labels, test_texts, use_smote, seed
+        train_texts, train_labels, test_texts, use_smote, seed, smote_target_ratio
     )
 
     # Step 5: OneVsRestClassifier with LogisticRegression

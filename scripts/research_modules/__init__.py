@@ -28,6 +28,10 @@ from .table_generators import (
     generate_comprehensive_metrics_report,
     generate_detailed_comparison_table,
 )
+from .statistical_analysis import (
+    generate_multi_metric_significance_report,
+    generate_statistical_significance_report,
+)
 
 __all__ = [
     # Report builders
@@ -51,4 +55,6 @@ __all__ = [
     # Table generators
     "generate_comprehensive_metrics_report",
     "generate_detailed_comparison_table",
+    "generate_statistical_significance_report",
+    "generate_multi_metric_significance_report",
 ]

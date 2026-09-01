@@ -11,14 +11,17 @@ sys.path.insert(0, str(project_root))
 import argparse
 import json
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 from tqdm.auto import tqdm
 
-from src.analysis.analysis_utils import export_train_smote_analysis
+from src.analysis.analysis_utils import (
+    export_constructiveness_evaluation_reliability,
+    export_train_smote_analysis,
+)
 from src.training.config import (
     AVAILABLE_MODELS,
     CommonConfig,
@@ -44,7 +47,12 @@ except ModuleNotFoundError as e:
 from src.models.models_nn import run_lstm_like
 from src.models.models_ml import run_linear_svm, run_naive_bayes, run_logistic_regression
 from src.models.models_transformers import run_transformer
-from src.utils.reporting import export_fold_result, export_results, export_test_predictions
+from src.utils.reporting import (
+    export_combined_final_test_predictions,
+    export_fold_result,
+    export_results,
+    export_test_predictions,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -133,7 +141,7 @@ def _make_folds(
     n_folds: int,
     test_size: float,
     seed: int,
-    labels: np.ndarray | None = None,
+    labels: Optional[np.ndarray] = None,
 ) -> List[Dict[str, np.ndarray]]:
     idx_local = np.arange(n_samples)
     fold_list: List[Dict[str, np.ndarray]] = []
@@ -326,6 +334,8 @@ def main() -> None:
         output_dir=analysis_dir,
         seed=common.seed,
         use_smote=bool(common.use_smote),
+        target_ratio=args.smote_target_ratio,
+        full_labels=labels,
     )
     _export_fold_splits(df, folds, common.output_dir)
 
@@ -572,6 +582,7 @@ def main() -> None:
     # Retrain each model once on the complete 80% development set, then perform
     # the only evaluation against the untouched 20% final test set.
     final_rows: List[Dict[str, float]] = []
+    final_reliability_data: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
     final_output_dir = os.path.join(common.output_dir, "final_test")
     final_train_texts = [texts[i] for i in development_idx]
     final_test_texts = [texts[i] for i in final_test_idx]
@@ -645,6 +656,7 @@ def main() -> None:
 
         final_predictions = np.load(os.path.join(model_artifact_dir, "predictions.npy"))
         final_labels = np.load(os.path.join(model_artifact_dir, "labels.npy"))
+        final_reliability_data[model_name] = (final_labels, final_predictions)
         final_results_file = export_test_predictions(
             save_dir=model_artifact_dir,
             model=model_name,
@@ -671,6 +683,18 @@ def main() -> None:
         print(f"Final test f1_macro={metrics['f1_macro']:.4f}", flush=True)
 
     export_results(final_rows, final_output_dir, append=args.append_results)
+    combined_final_test_files = export_combined_final_test_predictions(
+        output_dir=final_output_dir,
+        source_indices=final_test_idx,
+        texts=final_test_texts,
+        y_true=final_y_test,
+        model_results=final_reliability_data,
+    )
+    export_constructiveness_evaluation_reliability(
+        final_reliability_data,
+        os.path.join(final_output_dir, "reliability_analysis"),
+        seed=common.seed,
+    )
 
     manifest = {
         "run": {
@@ -680,6 +704,7 @@ def main() -> None:
             "test_size": float(common.test_size),
             "n_folds": int(args.n_folds),
             "protocol": "80/20 final holdout with cross-validation on the 80% development split",
+            "final_test_prediction_files": combined_final_test_files,
             "use_smote_on_training_split": bool(common.use_smote),
             "smote_target_ratio": float(args.smote_target_ratio),
             "models": list(models_to_run),

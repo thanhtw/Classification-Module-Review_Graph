@@ -167,6 +167,39 @@ def generate_fold_level_per_label_report(
             "Per-label metrics are averaged across all available folds for the selected models. "
             f"See {filename_prefix}_all_folds.csv for fold-level details."
         ),
+        "methodology": {
+            "protocol": (
+                "The complete dataset is first divided into an 80% development set and an untouched 20% "
+                "final test set. Ten-fold cross-validation is performed only inside the development set."
+            ),
+            "smote_scope": (
+                "SMOTE/label-preserving oversampling is applied only to the training portion of each fold. "
+                "Validation-fold and final-test observations are never resampled."
+            ),
+            "fold_aggregation": (
+                "Precision, Recall, and F1 are calculated on each original validation fold, then reported as "
+                "the arithmetic mean ± sample standard deviation across folds."
+            ),
+            "support_definition": (
+                "support_positive_total is the number of original positive validation observations accumulated "
+                "across the mutually exclusive folds. It excludes all SMOTE-added copies."
+            ),
+            "constructiveness_evidence": (
+                "The complete dataset contains 233 original constructiveness-positive observations. Under the "
+                "80:20 protocol, approximately 186 are in the development set and approximately 47 are in the "
+                "untouched final test set. The exact realized counts depend on stratification and rounding."
+            ),
+            "bootstrap_distinction": (
+                "The 2,000 value in the final-test reliability report is the number of paired-row bootstrap "
+                "repetitions used to estimate 95% confidence intervals. It is not a sample count, does not add "
+                "training observations, and does not increase independent evidence."
+            ),
+            "interpretation": (
+                "Oversampling can improve class balance during model fitting, but duplicated/resampled rows are "
+                "not independent observations. Model reliability must therefore be judged from untouched "
+                "validation/test support, fold variability, and final-test confidence intervals."
+            ),
+        },
         "models": {},
     }
 
@@ -194,10 +227,30 @@ def generate_fold_level_per_label_report(
 
     fold_csv = output_dir / f"{filename_prefix}_all_folds.csv"
     summary_csv = output_dir / f"{filename_prefix}_summary.csv"
+    mean_sd_csv = output_dir / f"{filename_prefix}_mean_sd.csv"
+    constructiveness_csv = output_dir / "constructiveness_fold_averaged_mean_sd.csv"
     report_json = output_dir / f"{filename_prefix}_report.json"
     report_txt = output_dir / f"{filename_prefix}_report.txt"
     fold_df.to_csv(fold_csv, index=False)
     summary_df.to_csv(summary_csv, index=False)
+    publication_df = summary_df.copy()
+    publication_df["precision_mean_sd"] = publication_df.apply(
+        lambda row: f"{row['precision_mean']:.4f} ± {row['precision_std']:.4f}", axis=1
+    )
+    publication_df["recall_mean_sd"] = publication_df.apply(
+        lambda row: f"{row['recall_mean']:.4f} ± {row['recall_std']:.4f}", axis=1
+    )
+    publication_df["f1_mean_sd"] = publication_df.apply(
+        lambda row: f"{row['f1_mean']:.4f} ± {row['f1_std']:.4f}", axis=1
+    )
+    publication_columns = [
+        "model_key", "model", "label", "folds", "support_positive_total",
+        "precision_mean_sd", "recall_mean_sd", "f1_mean_sd",
+    ]
+    publication_df[publication_columns].to_csv(mean_sd_csv, index=False)
+    publication_df.loc[
+        publication_df["label"] == "constructive", publication_columns
+    ].to_csv(constructiveness_csv, index=False)
     with open(report_json, "w") as f:
         json.dump(per_label_report, f, indent=2)
 
@@ -209,6 +262,26 @@ def generate_fold_level_per_label_report(
         f"Generated: {per_label_report['timestamp']}",
         f"Labels: {', '.join(LABEL_COLUMNS)}",
         per_label_report["note"],
+        "Values are fold-averaged mean ± sample SD; support is the total original positive validation support.",
+        "",
+        "METHODOLOGY AND INTERPRETATION",
+        "-" * 120,
+        "1. Data protocol: The complete dataset is first split into an 80% development set and an untouched",
+        "   20% final test set. Ten-fold cross-validation is performed only inside the 80% development set.",
+        "2. Fold training: SMOTE/label-preserving oversampling is applied only to the training portion of each",
+        "   fold. It changes the rows used to fit the model. Validation folds and the final test set are not SMOTE-resampled.",
+        "3. Fold metrics: Precision, Recall, and F1 are calculated on each original validation fold. The values",
+        "   below are the arithmetic mean ± sample standard deviation across the completed folds.",
+        "4. Positive support: Pos support is the total number of original positive validation observations across",
+        "   the mutually exclusive folds. It excludes every SMOTE-added copy; copies are not independent evidence.",
+        "5. Constructiveness: The complete dataset has 233 original positive observations. Approximately 186 are",
+        "   assigned to the 80% development set and approximately 47 to the untouched 20% final test set. Exact",
+        "   realized counts can differ slightly because multilabel stratification and integer rounding are used.",
+        "6. Bootstrap: The 2,000 value in the final-test reliability report means 2,000 paired-row bootstrap",
+        "   repetitions for estimating 95% confidence intervals. It is not 2,000 new samples, is not used for",
+        "   model training, and does not increase the amount of independent constructiveness evidence.",
+        "7. Reliability: Oversampling may improve minority-class learning, but reliability must be interpreted from",
+        "   untouched validation/test support, fold-to-fold SD, and final-test bootstrap confidence intervals.",
         "",
     ]
 
@@ -217,7 +290,8 @@ def generate_fold_level_per_label_report(
         lines.append(f"{label.upper()} ({label_desc})")
         lines.append("-" * 120)
         lines.append(
-            f"{'Rank':<5} | {'Model':<50} | {'Folds':<6} | {'Precision':<10} | {'Recall':<10} | {'F1':<10}"
+            f"{'Rank':<5} | {'Model':<38} | {'Folds':<5} | {'Pos support':<11} | "
+            f"{'Precision mean ± SD':<21} | {'Recall mean ± SD':<21} | {'F1 mean ± SD':<21}"
         )
         lines.append("-" * 120)
 
@@ -228,9 +302,13 @@ def generate_fold_level_per_label_report(
                 {
                     "model": model_name,
                     "folds": int(model_metrics.get("folds", 0)),
+                    "support": int(metric_row.get("support_positive_total", 0)),
                     "precision": float(metric_row.get("precision", 0.0)),
+                    "precision_std": float(metric_row.get("precision_std", 0.0)),
                     "recall": float(metric_row.get("recall", 0.0)),
+                    "recall_std": float(metric_row.get("recall_std", 0.0)),
                     "f1": float(metric_row.get("f1", 0.0)),
+                    "f1_std": float(metric_row.get("f1_std", 0.0)),
                 }
             )
 
@@ -238,8 +316,10 @@ def generate_fold_level_per_label_report(
 
         for rank, item in enumerate(ranked_models, 1):
             lines.append(
-                f"{rank:<5} | {item['model'][:50]:<50} | {item['folds']:<6} | "
-                f"{item['precision']:<10.4f} | {item['recall']:<10.4f} | {item['f1']:<10.4f}"
+                f"{rank:<5} | {item['model'][:38]:<38} | {item['folds']:<5} | {item['support']:<11} | "
+                f"{item['precision']:.4f} ± {item['precision_std']:.4f}     | "
+                f"{item['recall']:.4f} ± {item['recall_std']:.4f}     | "
+                f"{item['f1']:.4f} ± {item['f1_std']:.4f}"
             )
         lines.append("")
 
@@ -253,7 +333,9 @@ def generate_fold_level_per_label_report(
 
     for model_name, model_metrics in per_label_report["models"].items():
         label_f1_values = " | ".join(
-            f"{float(model_metrics.get(label, {}).get('f1', 0.0)):<15.4f}" for label in LABEL_COLUMNS
+            f"{float(model_metrics.get(label, {}).get('f1', 0.0)):.4f} ± "
+            f"{float(model_metrics.get(label, {}).get('f1_std', 0.0)):.4f}"
+            for label in LABEL_COLUMNS
         )
         lines.append(
             f"{model_name[:50]:<50} | {int(model_metrics.get('folds', 0)):<6} | {label_f1_values}"
@@ -264,6 +346,8 @@ def generate_fold_level_per_label_report(
     return {
         "fold_level_csv": str(fold_csv),
         "summary_csv": str(summary_csv),
+        "mean_sd_csv": str(mean_sd_csv),
+        "constructiveness_csv": str(constructiveness_csv),
         "report_json": str(report_json),
         "report_txt": str(report_txt),
         "rows": len(fold_df),

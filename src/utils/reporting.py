@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Sequence, Tuple
 
 import pandas as pd
 import numpy as np
@@ -49,6 +49,67 @@ def export_test_predictions(
     destination.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(data).to_csv(destination, index=False, encoding="utf-8")
     return str(destination)
+
+
+def export_combined_final_test_predictions(
+    *,
+    output_dir: str,
+    source_indices: Sequence[int],
+    texts: Sequence[str],
+    y_true: np.ndarray,
+    model_results: Dict[str, Tuple[np.ndarray, np.ndarray]],
+) -> Dict[str, str]:
+    """Store final-test data and predictions in wide and long inspectable CSV files."""
+    true = np.asarray(y_true)
+    if true.ndim != 2 or true.shape[1] != len(LABEL_COLUMNS):
+        raise ValueError(f"Expected final-test labels with shape (n, {len(LABEL_COLUMNS)})")
+    if len(source_indices) != len(true) or len(texts) != len(true):
+        raise ValueError("Final-test source indices, texts, and labels must have equal length")
+
+    root = Path(output_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    wide_data = {
+        "source_index": [int(index) for index in source_indices],
+        "text": [str(text) for text in texts],
+    }
+    for label_index, label in enumerate(LABEL_COLUMNS):
+        wide_data[f"true_{label}"] = true[:, label_index].astype(int)
+    wide_df = pd.DataFrame(wide_data)
+    long_frames = []
+
+    for model, (saved_labels, saved_predictions) in model_results.items():
+        model_true = np.asarray(saved_labels)
+        pred = np.asarray(saved_predictions)
+        if model_true.shape != true.shape or pred.shape != true.shape:
+            raise ValueError(f"Final-test shape mismatch for model {model}")
+        if not np.array_equal(model_true, true):
+            raise ValueError(f"Final-test ground truth differs for model {model}")
+
+        model_frame = pd.DataFrame(
+            {
+                "source_index": [int(index) for index in source_indices],
+                "text": [str(text) for text in texts],
+                "model": str(model),
+            }
+        )
+        for label_index, label in enumerate(LABEL_COLUMNS):
+            true_values = true[:, label_index].astype(int)
+            pred_values = pred[:, label_index].astype(int)
+            wide_df[f"{model}_pred_{label}"] = pred_values
+            wide_df[f"{model}_correct_{label}"] = (true_values == pred_values).astype(int)
+            model_frame[f"true_{label}"] = true_values
+            model_frame[f"pred_{label}"] = pred_values
+            model_frame[f"correct_{label}"] = (true_values == pred_values).astype(int)
+        exact_match = np.all(true == pred, axis=1).astype(int)
+        wide_df[f"{model}_exact_match"] = exact_match
+        model_frame["exact_match"] = exact_match
+        long_frames.append(model_frame)
+
+    wide_path = root / "final_test_data_with_all_predictions.csv"
+    long_path = root / "final_test_predictions_all_models_long.csv"
+    wide_df.to_csv(wide_path, index=False, encoding="utf-8-sig")
+    pd.concat(long_frames, ignore_index=True).to_csv(long_path, index=False, encoding="utf-8-sig")
+    return {"wide": str(wide_path), "long": str(long_path)}
 
 
 def export_fold_result(row: Dict[str, object], output_dir: str) -> None:

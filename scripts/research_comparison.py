@@ -637,6 +637,8 @@ def run_research_comparison(n_folds=10, seed=42, selected_model_keys=None, repor
         print(f"  ✓ {latex_file}")
         print(f"  ✓ {fold_level_per_label_report['fold_level_csv']}")
         print(f"  ✓ {fold_level_per_label_report['summary_csv']}")
+        print(f"  ✓ {fold_level_per_label_report['mean_sd_csv']}")
+        print(f"  ✓ {fold_level_per_label_report['constructiveness_csv']}")
         print(f"  ✓ {fold_level_per_label_report['report_txt']}")
         print(f"  ✓ {results_dir}/per_label_metrics_report.json")
         print(f"  ✓ {results_dir}/per_label_metrics_report.txt")

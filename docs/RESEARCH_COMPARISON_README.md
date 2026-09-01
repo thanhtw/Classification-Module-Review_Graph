@@ -22,28 +22,51 @@ scripts/research_comparison.py compares these models:
 - gpt-5.6-luna (LLM, Zero-shot) (llm_zero_shot)
 - gpt-5.6-luna (LLM, Few-shot k=10) (llm_few_shot)
 
-The default workflow uses shared 10-fold partitions for all methods. The first
-seven models train on each training fold and evaluate on its held-out test
-fold. The LLM methods do not train parameters: zero-shot predicts only test
-rows, while few-shot uses training-fold examples only as prompt context and
-predicts only test rows.
+The default workflow first creates one stratified 80:20 development/final-test
+split. Ten-fold cross-validation is then performed only within the 80%
+development set. The final 20% test set remains untouched until each model is
+retrained on the development data and evaluated once. The LLM methods do not
+train parameters: zero-shot predicts evaluation rows directly, while few-shot
+uses development examples only as prompt context.
+
+### Implied Final-Test Counts
+
+The following counts are implied by the dataset totals and a stratified 80:20
+split. Approximate values are shown because multilabel stratification and
+integer rounding determine the exact final split. The exact realized counts
+are recorded in `splits/final_holdout/test_20/data.csv`.
+
+| Label | Total positive | Total samples | Test positive (≈20%) | Test negative (≈20%) |
+|---|---:|---:|---:|---:|
+| Relevance | 1,868 | 2,398 | ≈374 | ≈106 |
+| Concreteness | 1,099 | 2,398 | ≈220 | ≈260 |
+| Constructiveness | 233 | 2,398 | **≈47** | ≈433 |
+
+The approximately 47 constructive-positive final-test observations are the
+independent support for final constructiveness Recall. Resampled training rows
+do not increase this support. Accordingly, final-test Precision, Recall, and
+F1 are accompanied by bootstrap 95% confidence intervals.
 
 ## How the Pipeline Works
 
-1. The pipeline creates one shared set of 10 train/test folds and exports the
-   exact rows under `results/modular_multimodel/splits/`.
-2. BERT, RoBERTa, Linear SVM, Naive Bayes, Logistic Regression, LSTM, and
-   BiLSTM train on each training fold and evaluate on the corresponding test fold.
-3. Zero-shot and few-shot LLM methods perform prediction only on the same test
-   folds. Few-shot training rows are prompt demonstrations, not parameter training.
-4. It loads `results/modular_multimodel/model_results_detailed.csv` and computes
+1. The pipeline creates one stratified 80:20 development/final-test split.
+2. It creates 10 shared cross-validation folds within only the 80% development
+   set and exports their exact rows under `results/modular_multimodel/splits/`.
+3. BERT, RoBERTa, Linear SVM, Naive Bayes, Logistic Regression, LSTM, and
+   BiLSTM train on each inner training fold and evaluate on its validation fold.
+4. It retrains each learned model on the complete 80% development set and
+   evaluates it once on the untouched 20% final test set.
+5. Zero-shot and few-shot LLM methods perform prediction on the corresponding
+   evaluation rows. Few-shot development rows are prompt demonstrations, not
+   parameter training.
+6. It loads `results/modular_multimodel/model_results_detailed.csv` and computes
    mean and sample standard deviation across all completed folds for every model.
-5. It selects one best fold per model only for artifact-based figures and
+7. It selects one best fold per model only for artifact-based figures and
    feature inspection, using:
    - f1_macro (desc)
    - f1_micro (desc)
    - subset_accuracy (desc)
-6. It generates the combined nine-method tables, reports, and visualizations.
+8. It generates the combined nine-method tables, reports, and visualizations.
 
 ## Run Commands
 
@@ -109,7 +132,17 @@ Core comparison files in results/research_comparison:
 Metrics reports:
 - per_label_metrics_report.json
 - per_label_metrics_report.txt
+- all_models_per_label_all_folds.csv
+- all_models_per_label_summary.csv
+- all_models_per_label_mean_sd.csv
+- constructiveness_fold_averaged_mean_sd.csv
 - multilabel_metrics_report.json
+
+`all_models_per_label_mean_sd.csv` reports fold-averaged Precision, Recall, and
+F1 as `mean ± SD` for relevance, concreteness, and constructiveness.
+`constructiveness_fold_averaged_mean_sd.csv` is the publication-focused subset
+for the minority constructiveness label and includes its original positive
+validation support.
 
 Other reports:
 - dataset_report.json
@@ -136,6 +169,16 @@ Primary input artifacts:
 - results/modular_multimodel/model_artifacts/{model}/fold_{k}/metadata.json (thresholds if present)
 - results/modular_multimodel/model_artifacts/{model}/fold_{k}/training_history.json (threshold fallback for LSTM/BiLSTM)
 - results/modular_multimodel/global_train_data_analysis/train_smote_analysis_summary.json
+
+Final-test row-level prediction exports:
+- `results/modular_multimodel/final_test/final_test_data_with_all_predictions.csv`
+  contains one row per original test example, its text and ground truth, plus
+  prediction/correctness columns for every completed model.
+- `results/modular_multimodel/final_test/final_test_predictions_all_models_long.csv`
+  contains one row per original test example and model, which is convenient
+  for filtering, grouping, and statistical analysis.
+- `results/modular_multimodel/final_test/model_artifacts/{model}/test_results_with_ground_truth.csv`
+  retains the separate row-level export for each model.
 
 Best-fold mapping priority used by visualization helpers:
 1. results/research_comparison/best_fold_model_comparison.csv

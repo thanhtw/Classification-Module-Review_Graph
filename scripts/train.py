@@ -216,8 +216,22 @@ def _export_fold_splits(df, folds: List[Dict[str, np.ndarray]], output_dir: str)
         )
 
 
+def _is_usable_huggingface_snapshot(snapshot_path: str) -> bool:
+    """Return whether a snapshot has config, tokenizer assets, and PyTorch weights."""
+    snapshot = Path(snapshot_path)
+    has_config = (snapshot / "config.json").is_file()
+    has_tokenizer = any(
+        (snapshot / name).is_file()
+        for name in ("tokenizer.json", "tokenizer_config.json", "vocab.txt", "spiece.model")
+    )
+    has_weights = any(snapshot.glob("*.safetensors")) or any(
+        snapshot.glob("pytorch_model*.bin")
+    )
+    return has_config and has_tokenizer and has_weights
+
+
 def _resolve_huggingface_checkpoint(model_id: str, cache_dir: str) -> str:
-    """Resolve a complete local snapshot, downloading only when absent."""
+    """Resolve a complete local snapshot, downloading only required PyTorch files."""
     from huggingface_hub import snapshot_download
 
     cache_path = Path(cache_dir).resolve()
@@ -228,14 +242,41 @@ def _resolve_huggingface_checkpoint(model_id: str, cache_dir: str) -> str:
             cache_dir=str(cache_path),
             local_files_only=True,
         )
+        if not _is_usable_huggingface_snapshot(snapshot_path):
+            raise FileNotFoundError("cached snapshot is incomplete")
         print(f"Using cached Hugging Face checkpoint: {model_id} -> {snapshot_path}")
-    except Exception:
-        print(f"Checkpoint not cached; downloading once from Hugging Face: {model_id}")
+    except (OSError, ValueError):
+        print(f"Checkpoint not cached; downloading PyTorch files from Hugging Face: {model_id}")
+        common_files = [
+            "config.json",
+            "tokenizer*",
+            "vocab*",
+            "merges.txt",
+            "added_tokens.json",
+            "special_tokens_map.json",
+            "*.model",
+        ]
+        # Prefer safetensors. Unlike an unrestricted snapshot download, this
+        # avoids fetching duplicate PyTorch .bin weights and TF/Flax artifacts.
         snapshot_path = snapshot_download(
             repo_id=model_id,
             cache_dir=str(cache_path),
             local_files_only=False,
+            allow_patterns=[*common_files, "*.safetensors", "*.safetensors.index.json"],
         )
+        if not _is_usable_huggingface_snapshot(snapshot_path):
+            # Older checkpoints may only publish pytorch_model.bin (possibly sharded).
+            snapshot_path = snapshot_download(
+                repo_id=model_id,
+                cache_dir=str(cache_path),
+                local_files_only=False,
+                allow_patterns=[*common_files, "pytorch_model*.bin", "pytorch_model.bin.index.json"],
+            )
+        if not _is_usable_huggingface_snapshot(snapshot_path):
+            raise RuntimeError(
+                f"Downloaded checkpoint '{model_id}' is incomplete: expected config, "
+                "tokenizer files, and PyTorch weights."
+            )
         print(f"Checkpoint cached for future folds and runs: {snapshot_path}")
     return str(Path(snapshot_path).resolve())
 

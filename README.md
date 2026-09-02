@@ -94,9 +94,12 @@ epoch-level train/validation loss so long-running folds do not appear stalled.
 
 BERT and RoBERTa checkpoints use the persistent cache configured by
 `HF_MODEL_CACHE_DIR` in `.env`. The pipeline checks for a complete local
-snapshot first and downloads only when it is missing. Each fold creates a fresh
-model instance from the cached files so cross-validation remains independent;
-this reloads weights from disk but does not download them again.
+snapshot first and downloads only when it is missing. On the first run it
+fetches tokenizer/configuration files and one PyTorch weight format only; it
+does not download duplicate TensorFlow, Flax, and alternate PyTorch artifacts.
+Each fold creates a fresh model instance from the cached files so
+cross-validation remains independent; this reloads weights from disk but does
+not download them again.
 
 Before LLM evaluation, add your private key to the ignored `.env` file. Use
 `.env.example` as the shareable configuration template.
